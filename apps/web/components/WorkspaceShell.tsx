@@ -306,6 +306,7 @@ export function WorkspaceShell() {
   const [renamingFileNodeId, setRenamingFileNodeId] = useState<string | null>(null);
   const [fileNodeRenameDraft, setFileNodeRenameDraft] = useState("");
   const [workspaceCreating, setWorkspaceCreating] = useState(false);
+  const [workspaceCreateError, setWorkspaceCreateError] = useState<string | null>(null);
   const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [commandPaletteQuery, setCommandPaletteQuery] = useState("");
@@ -590,7 +591,7 @@ export function WorkspaceShell() {
     if (workspaceCreating) return;
 
     setWorkspaceCreating(true);
-    setError(null);
+    setWorkspaceCreateError(null);
 
     try {
       const response = await fetch("/api/workspaces", { method: "POST" });
@@ -601,7 +602,7 @@ export function WorkspaceShell() {
       }
 
       if (!response.ok) {
-        setError(await readActionError(response, "Workspace creation failed"));
+        setWorkspaceCreateError(await readActionError(response, "Workspace creation failed"));
         return;
       }
 
@@ -616,7 +617,7 @@ export function WorkspaceShell() {
       setCreationMenuOpen(false);
       setShareOpen(false);
     } catch (workspaceCreateError) {
-      setError(workspaceCreateError instanceof Error ? workspaceCreateError.message : "Workspace creation failed");
+      setWorkspaceCreateError(workspaceCreateError instanceof Error ? workspaceCreateError.message : "Workspace creation failed");
       setSyncState("offline");
     } finally {
       setWorkspaceCreating(false);
@@ -1840,6 +1841,7 @@ export function WorkspaceShell() {
                   <button className="primary-control" disabled={workspaceCreating} onClick={() => void createWorkspace()}>
                     {workspaceCreating ? "Creating" : "Create workspace"}
                   </button>
+                  {workspaceCreateError && <strong className="workspace-create-error">{workspaceCreateError}</strong>}
                 </div>
               )}
             </div>

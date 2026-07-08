@@ -21,7 +21,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Authentication required" }, { status: 401 });
   }
 
-  const workspace = await workspaceRepository.createDefaultWorkspaceForUser(user.id, user.name);
-  const payload = await workspaceRepository.getWorkspacePayload(user.id, workspace.id);
-  return NextResponse.json(payload, { status: 201 });
+  try {
+    const workspace = await workspaceRepository.createDefaultWorkspaceForUser(user.id, user.name);
+    const payload = await workspaceRepository.getWorkspacePayload(user.id, workspace.id);
+    return NextResponse.json(payload, { status: 201 });
+  } catch (error) {
+    const message = error instanceof Error && error.message ? error.message : "Workspace creation failed";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
 }

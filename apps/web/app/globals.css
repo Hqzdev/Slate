@@ -4507,6 +4507,12 @@ button:disabled {
   gap: 10px;
 }
 
+.workspace-create-error {
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .workspace-start {
   display: grid;
   min-width: 0;
