@@ -1118,6 +1118,18 @@ button:disabled {
   color: var(--text);
 }
 
+.workspace-switcher:disabled {
+  cursor: not-allowed;
+  border-color: var(--border);
+  color: var(--text-disabled);
+  opacity: 0.72;
+}
+
+.workspace-switcher:disabled:hover {
+  border-color: var(--border);
+  color: var(--text-disabled);
+}
+
 .workspace-switcher-menu {
   position: absolute;
   top: 43px;

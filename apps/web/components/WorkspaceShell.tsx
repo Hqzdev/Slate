@@ -1623,16 +1623,17 @@ export function WorkspaceShell() {
   const terminalLines = selectedRun?.output ? selectedRun.output.split(/\r?\n/) : outputLines;
   const panelTabs: PanelTab[] = activeTab?.type === "code" ? ["Output", "Activity", "Comments", "AI"] : ["Activity", "Comments", "AI"];
   const selectedPanel = panelTabs.includes(activePanel) ? activePanel : panelTabs[0];
+  const canSwitchWorkspace = (payload?.workspaces.length ?? 0) > 1;
 
   return (
     <main className="workspace-shell" data-theme={theme}>
       <aside className="workspace-sidebar">
         <div className="workspace-brand-row">
           <BrandMark href="/" />
-          <button className="workspace-switcher" onClick={() => setWorkspaceSwitcherOpen((open) => !open)}>
+          <button className="workspace-switcher" disabled={!canSwitchWorkspace} onClick={() => setWorkspaceSwitcherOpen((open) => canSwitchWorkspace ? !open : false)} title={canSwitchWorkspace ? "Switch workspace" : "No other workspaces available"} type="button">
             {activeWorkspace?.slug ?? "Switch workspace"}
           </button>
-          {workspaceSwitcherOpen && (
+          {workspaceSwitcherOpen && canSwitchWorkspace && (
             <div className="workspace-switcher-menu">
               {payload?.workspaces.map((workspace) => (
                 <button className={workspace.id === activeWorkspace?.id ? "active" : ""} key={workspace.id} onClick={() => { selectWorkspace(workspace.id); setWorkspaceSwitcherOpen(false); }}>
