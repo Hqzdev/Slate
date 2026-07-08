@@ -1,0 +1,42 @@
+import { NextRequest, NextResponse } from "next/server";
+import { authService } from "@/lib/server/auth";
+import { commentRepository } from "@/lib/server/commentRepository";
+
+export const runtime = "nodejs";
+
+export async function GET(request: NextRequest, context: { params: Promise<{ documentId: string }> }) {
+  const user = await authService.getUserFromRequest(request);
+  if (!user) {
+    return NextResponse.json({ error: "Authentication required" }, { status: 401 });
+  }
+
+  const { documentId } = await context.params;
+
+  try {
+    const comments = await commentRepository.listDocumentComments(user.id, documentId);
+    return NextResponse.json({ comments });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Comments failed to load" }, { status: 403 });
+  }
+}
+
+export async function POST(request: NextRequest, context: { params: Promise<{ documentId: string }> }) {
+  const user = await authService.getUserFromRequest(request);
+  if (!user) {
+    return NextResponse.json({ error: "Authentication required" }, { status: 401 });
+  }
+
+  const body = await request.json();
+  const { documentId } = await context.params;
+
+  try {
+    const comment = await commentRepository.createDocumentComment(user.id, documentId, {
+      body: typeof body.body === "string" ? body.body : "",
+      fileNodeId: typeof body.fileNodeId === "string" ? body.fileNodeId : null,
+      shapeId: typeof body.shapeId === "string" ? body.shapeId : null
+    });
+    return NextResponse.json({ comment }, { status: 201 });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Comment creation failed" }, { status: 403 });
+  }
+}

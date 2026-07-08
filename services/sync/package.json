@@ -1,0 +1,21 @@
+{
+  "name": "@slate/sync",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node src/server.js",
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "@prisma/client": "6.19.3",
+    "ioredis": "^5.11.1",
+    "lib0": "^0.2.114",
+    "ws": "^8.18.3",
+    "y-protocols": "^1.0.6",
+    "yjs": "^13.6.31"
+  },
+  "devDependencies": {
+    "prisma": "6.19.3"
+  }
+}

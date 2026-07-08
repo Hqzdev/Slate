@@ -1,0 +1,236 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+generator syncClient {
+  provider = "prisma-client-js"
+  output   = "../../../services/sync/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum DocumentType {
+  code
+  note
+  canvas
+}
+
+enum WorkspaceRole {
+  owner
+  editor
+  viewer
+}
+
+enum JobStatus {
+  pending
+  running
+  completed
+  failed
+}
+
+enum FileNodeKind {
+  folder
+  document
+}
+
+model User {
+  id              String            @id @default(cuid())
+  email           String            @unique
+  name            String
+  passwordHash    String?
+  initials        String
+  color           String
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  activityEvents  ActivityEvent[]
+  comments        DocumentComment[]
+  memberships     WorkspaceMember[]
+  jobRuns         JobRun[]
+  sessions        Session[]
+  invitesCreated  WorkspaceInvite[] @relation("InviteCreator")
+  invitesAccepted WorkspaceInvite[] @relation("InviteAccepter")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Workspace {
+  id        String            @id @default(cuid())
+  slug      String            @unique
+  name      String
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+  activity  ActivityEvent[]
+  comments  DocumentComment[]
+  members   WorkspaceMember[]
+  documents Document[]
+  fileNodes WorkspaceFileNode[]
+  jobRuns   JobRun[]
+  invites   WorkspaceInvite[]
+}
+
+model WorkspaceInvite {
+  id               String        @id @default(cuid())
+  tokenHash        String        @unique
+  email            String?
+  role             WorkspaceRole
+  expiresAt        DateTime
+  acceptedAt       DateTime?
+  createdAt        DateTime      @default(now())
+  workspaceId      String
+  createdByUserId  String
+  acceptedByUserId String?
+  workspace        Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy        User          @relation("InviteCreator", fields: [createdByUserId], references: [id], onDelete: Cascade)
+  acceptedBy       User?         @relation("InviteAccepter", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+  @@index([expiresAt])
+}
+
+model WorkspaceMember {
+  id          String        @id @default(cuid())
+  role        WorkspaceRole
+  createdAt   DateTime      @default(now())
+  userId      String
+  workspaceId String
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workspaceId])
+}
+
+model Document {
+  id          String             @id @default(cuid())
+  title       String
+  type        DocumentType
+  language    String?
+  content     String             @default("")
+  canvasState Json?
+  position    Int
+  archivedAt  DateTime?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  workspaceId String
+  workspace   Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  snapshots   DocumentSnapshot[]
+  realtime    DocumentRealtime?
+  jobRuns     JobRun[]
+  fileNode    WorkspaceFileNode?
+  activity    ActivityEvent[]
+  comments    DocumentComment[]
+
+  @@index([workspaceId, position])
+  @@index([workspaceId, archivedAt])
+}
+
+model ActivityEvent {
+  id          String    @id @default(cuid())
+  type        String
+  metadata    Json?
+  createdAt   DateTime  @default(now())
+  actorUserId String?
+  workspaceId String
+  documentId  String?
+  actor       User?     @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  document    Document? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+  @@index([documentId, createdAt])
+}
+
+model DocumentComment {
+  id           String    @id @default(cuid())
+  body         String
+  shapeId      String?
+  fileNodeId   String?
+  resolvedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  authorUserId String
+  workspaceId  String
+  documentId   String
+  author       User      @relation(fields: [authorUserId], references: [id], onDelete: Cascade)
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  document     Document  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+  @@index([documentId, resolvedAt, createdAt])
+  @@index([authorUserId])
+}
+
+model WorkspaceFileNode {
+  id          String              @id @default(cuid())
+  name        String
+  kind        FileNodeKind
+  position    Int
+  archivedAt  DateTime?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  workspaceId String
+  parentId    String?
+  documentId  String?             @unique
+  workspace   Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  parent      WorkspaceFileNode?   @relation("FileNodeChildren", fields: [parentId], references: [id], onDelete: Cascade)
+  children    WorkspaceFileNode[]  @relation("FileNodeChildren")
+  document    Document?            @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, parentId, position])
+  @@index([workspaceId, archivedAt])
+  @@index([parentId])
+}
+
+model DocumentRealtime {
+  id         String   @id @default(cuid())
+  roomName   String   @unique
+  state      Bytes
+  updatedAt  DateTime @updatedAt
+  documentId String   @unique
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([updatedAt])
+}
+
+model DocumentSnapshot {
+  id          String   @id @default(cuid())
+  content     String
+  canvasState Json?
+  label       String?
+  createdAt   DateTime @default(now())
+  documentId  String
+  document    Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId, createdAt])
+}
+
+model JobRun {
+  id          String    @id @default(cuid())
+  status      JobStatus @default(pending)
+  kind        String
+  output      String    @default("")
+  error       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  userId      String
+  workspaceId String
+  documentId  String?
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  document    Document? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+  @@index([documentId, createdAt])
+}

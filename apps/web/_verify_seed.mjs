@@ -1,0 +1,13 @@
+import { PrismaClient } from "@prisma/client";
+import { createHash, randomBytes } from "node:crypto";
+const prisma = new PrismaClient();
+const tag = "verify_" + Date.now();
+const user = await prisma.user.create({ data: { email: `${tag}@t.io`, name: "Verify", initials: "VE", color: "blue" } });
+const ws = await prisma.workspace.create({ data: { slug: tag, name: "Verify WS" } });
+await prisma.workspaceMember.create({ data: { role: "owner", userId: user.id, workspaceId: ws.id } });
+const doc = await prisma.document.create({ data: { title: "canvas.slate", type: "canvas", position: 0, workspaceId: ws.id, canvasState: { version: 1, shapes: [], viewport: { panX: 0, panY: 0, zoom: 1 } } } });
+const token = randomBytes(32).toString("base64url");
+const tokenHash = createHash("sha256").update(token).digest("base64url");
+await prisma.session.create({ data: { tokenHash, expiresAt: new Date(Date.now() + 3600_000), userId: user.id } });
+console.log(JSON.stringify({ token, documentId: doc.id, workspaceId: ws.id }));
+await prisma.$disconnect();
