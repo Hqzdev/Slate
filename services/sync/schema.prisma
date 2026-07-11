@@ -1,0 +1,35 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "./generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum DocumentType {
+  code
+  canvas
+  note
+}
+
+model Document {
+  id          String            @id @default(cuid())
+  type        DocumentType
+  content     String            @default("")
+  canvasState Json?
+  archivedAt  DateTime?
+  updatedAt   DateTime          @updatedAt
+  workspaceId String
+  realtime    DocumentRealtime?
+}
+
+model DocumentRealtime {
+  id         String   @id @default(cuid())
+  roomName   String   @unique
+  state      Bytes
+  updatedAt  DateTime @updatedAt
+  documentId String   @unique
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+}

@@ -1,4 +1,4 @@
-import type { CanvasColor, CanvasDash, CanvasFill, CanvasFont, CanvasShape, CanvasShapeType, CanvasSize, CanvasTextAlign, CanvasViewport } from "@/components/CanvasEditorShell";
+import type { CanvasColor, CanvasDash, CanvasFill, CanvasFont, CanvasShape, CanvasShapeType, CanvasSize, CanvasTextAlign, CanvasViewport } from "./canvasTypes";
 
 export type CanvasDocumentV1 = {
   gridSize: number;
@@ -16,9 +16,14 @@ export type CanvasDocumentV1 = {
 export type AnyCanvasDocument = CanvasDocumentV1;
 
 export const CURRENT_CANVAS_VERSION = 1;
+export const MAXIMUM_CANVAS_STATE_BYTES = 524_288;
 const defaultGridSize = 24;
+const maximumGridSize = 512;
+const maximumZoom = 2.5;
+const minimumGridSize = 1;
+const minimumZoom = 0.3;
 
-const canvasShapeTypes = new Set<CanvasShapeType>(["arrow", "ellipse", "line", "note", "rectangle", "text"]);
+const canvasShapeTypes = new Set<CanvasShapeType>(["arrow", "diamond", "ellipse", "line", "note", "parallelogram", "rectangle", "text", "trapezoid"]);
 const canvasColors = new Set<CanvasColor>(["black", "blue", "green", "grey", "light-blue", "light-green", "light-red", "light-violet", "orange", "red", "violet", "white", "yellow"]);
 const canvasDashes = new Set<CanvasDash>(["dash-dot", "dashed", "dotted", "long-dashed", "solid"]);
 const canvasFills = new Set<CanvasFill>(["none", "semi", "solid"]);
@@ -36,6 +41,13 @@ const legacyCanvasSizes: Record<string, CanvasSize> = {
   s: 14,
   xl: 32
 };
+
+export class CanvasStateValidationError extends Error {
+  constructor() {
+    super("Canvas state is invalid or exceeds the 512 KiB limit");
+    this.name = "CanvasStateValidationError";
+  }
+}
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
@@ -101,8 +113,8 @@ export function isCanvasShape(value: unknown): value is CanvasShape {
     typeof candidate.isHidden === "boolean" &&
     typeof candidate.isLocked === "boolean" &&
     typeof candidate.name === "string" &&
-    isFiniteNumber(candidate.opacity) &&
-    isFiniteNumber(candidate.revision) &&
+    isFiniteNumber(candidate.opacity) && candidate.opacity >= 0 && candidate.opacity <= 1 &&
+    isFiniteNumber(candidate.revision) && candidate.revision >= 0 && Number.isInteger(candidate.revision) &&
     isFiniteNumber(candidate.updatedAt) &&
     isFiniteNumber(candidate.h) &&
     isFiniteNumber(candidate.w) &&
@@ -130,6 +142,11 @@ function migrateCanvasShape(value: unknown): CanvasShape | null {
     typeof candidate.textAlign !== "string" ||
     !canvasTextAligns.has(candidate.textAlign as CanvasTextAlign) ||
     typeof candidate.text !== "string" ||
+    (candidate.clientId !== undefined && typeof candidate.clientId !== "string") ||
+    (candidate.isHidden !== undefined && typeof candidate.isHidden !== "boolean") ||
+    (candidate.name !== undefined && typeof candidate.name !== "string") ||
+    (candidate.revision !== undefined && !isFiniteNumber(candidate.revision)) ||
+    (candidate.updatedAt !== undefined && !isFiniteNumber(candidate.updatedAt)) ||
     typeof candidate.isLocked !== "boolean" ||
     !isFiniteNumber(candidate.opacity) ||
     !isFiniteNumber(candidate.h) ||
@@ -166,13 +183,30 @@ function migrateCanvasShape(value: unknown): CanvasShape | null {
 function isCanvasViewport(value: unknown): value is CanvasViewport {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<CanvasViewport>;
-  return isFiniteNumber(candidate.panX) && isFiniteNumber(candidate.panY) && isFiniteNumber(candidate.zoom);
+  return isFiniteNumber(candidate.panX) && isFiniteNumber(candidate.panY) && isFiniteNumber(candidate.zoom) && candidate.zoom >= minimumZoom && candidate.zoom <= maximumZoom;
+}
+
+function isCanvasShapeTombstones(value: unknown): value is CanvasDocumentV1["shapeTombstones"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.entries(value).every(([id, metadata]) => {
+    if (!id || !metadata || typeof metadata !== "object") return false;
+    const candidate = metadata as { clientId?: unknown; revision?: unknown; updatedAt?: unknown };
+    return typeof candidate.clientId === "string" && isFiniteNumber(candidate.revision) && candidate.revision >= 0 && Number.isInteger(candidate.revision) && isFiniteNumber(candidate.updatedAt);
+  });
+}
+
+function isCanvasStateWithinSizeLimit(value: unknown) {
+  try {
+    return new TextEncoder().encode(JSON.stringify(value)).byteLength <= MAXIMUM_CANVAS_STATE_BYTES;
+  } catch {
+    return false;
+  }
 }
 
 export function isCanvasDocumentV1(value: unknown): value is CanvasDocumentV1 {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<CanvasDocumentV1>;
-  return candidate.version === 1 && typeof candidate.snapToGrid === "boolean" && isFiniteNumber(candidate.gridSize) && Array.isArray(candidate.shapes) && candidate.shapes.every(isCanvasShape) && isCanvasViewport(candidate.viewport);
+  return candidate.version === 1 && typeof candidate.snapToGrid === "boolean" && isFiniteNumber(candidate.gridSize) && candidate.gridSize >= minimumGridSize && candidate.gridSize <= maximumGridSize && isCanvasShapeTombstones(candidate.shapeTombstones) && Array.isArray(candidate.shapes) && candidate.shapes.every(isCanvasShape) && isCanvasViewport(candidate.viewport) && isCanvasStateWithinSizeLimit(candidate);
 }
 
 function normalizeShapeTombstones(value: unknown): CanvasDocumentV1["shapeTombstones"] {
@@ -199,9 +233,9 @@ function createShape(type: CanvasShapeType, point: { x: number; y: number }, ove
   const now = Date.now();
   const baseShape: CanvasShape = {
     clientId: "system",
-    color: "blue",
+    color: type === "note" ? "grey" : "blue",
     dash: "solid",
-    fill: type === "text" || type === "line" || type === "arrow" ? "none" : "semi",
+    fill: type === "note" ? "solid" : type === "text" || type === "line" || type === "arrow" ? "none" : "semi",
     font: "sans",
     h: type === "text" ? 48 : type === "line" || type === "arrow" ? 80 : 96,
     id: createShapeId(),
@@ -238,10 +272,10 @@ export function createDefaultCanvasState(): CanvasDocumentV1 {
     gridSize: defaultGridSize,
     shapeTombstones: {},
     shapes: [
-      createShape("rectangle", { x: 110, y: 90 }, { name: "Rectangle 1", text: "charge()", w: 180, h: 76 }),
-      createShape("rectangle", { x: 250, y: 230 }, { name: "Rectangle 2", text: "gateway.submit", w: 190, h: 82 }),
-      createShape("note", { x: 430, y: 105 }, { name: "Note 1", text: "retry must reset backoff after success", w: 220, h: 120 }),
-      createShape("arrow", { x: 210, y: 165 }, { name: "Arrow 1", w: 160, h: 110 })
+      createShape("rectangle", { x: 110, y: 90 }, { font: "mono", name: "Charge service", text: "charge()", w: 180, h: 76 }),
+      createShape("rectangle", { x: 250, y: 230 }, { font: "mono", name: "Payment gateway", text: "gateway.submit", w: 190, h: 82 }),
+      createShape("note", { x: 430, y: 105 }, { color: "grey", fill: "solid", name: "Retry policy", text: "Retry must reset backoff after success.", w: 220, h: 120 }),
+      createShape("arrow", { x: 210, y: 165 }, { name: "Submit request", w: 160, h: 110 })
     ],
     snapToGrid: true,
     version: 1,
@@ -254,14 +288,23 @@ const canvasMigrations: Record<number, (raw: unknown) => AnyCanvasDocument | nul
     if (!raw || typeof raw !== "object") return null;
     const candidate = raw as Partial<CanvasDocumentV1>;
     if (!Array.isArray(candidate.shapes) || !isCanvasViewport(candidate.viewport)) return null;
-    const shapes = candidate.shapes.map(migrateCanvasShape).filter((shape): shape is CanvasShape => Boolean(shape));
+    if (candidate.gridSize !== undefined && !isFiniteNumber(candidate.gridSize)) return null;
+    if (candidate.snapToGrid !== undefined && typeof candidate.snapToGrid !== "boolean") return null;
+    const migratedShapes = candidate.shapes.map(migrateCanvasShape);
+    if (migratedShapes.some((shape) => shape === null)) return null;
+    const shapes = migratedShapes as CanvasShape[];
+    const shapeTombstones = normalizeShapeTombstones(candidate.shapeTombstones);
+    if (candidate.shapeTombstones !== undefined) {
+      if (!candidate.shapeTombstones || typeof candidate.shapeTombstones !== "object" || Array.isArray(candidate.shapeTombstones)) return null;
+      if (Object.keys(shapeTombstones).length !== Object.keys(candidate.shapeTombstones).length) return null;
+    }
     const namedShapes = shapes.map((shape, index) => ({
       ...shape,
       name: shape.name.trim() && shape.name !== getShapeTypeLabel(shape.type) ? shape.name : getNextShapeName(shapes.slice(0, index), shape.type)
     }));
     return {
       gridSize: isFiniteNumber(candidate.gridSize) ? candidate.gridSize : defaultGridSize,
-      shapeTombstones: normalizeShapeTombstones(candidate.shapeTombstones),
+      shapeTombstones,
       shapes: namedShapes,
       snapToGrid: typeof candidate.snapToGrid === "boolean" ? candidate.snapToGrid : true,
       version: 1,
@@ -281,5 +324,12 @@ export function migrateCanvasState(raw: unknown): AnyCanvasDocument {
 }
 
 export function normalizeCanvasState(raw: unknown): AnyCanvasDocument {
-  return migrateCanvasState(raw);
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new CanvasStateValidationError();
+  const version = (raw as { version?: unknown }).version;
+  if (typeof version !== "number") throw new CanvasStateValidationError();
+  const migrate = canvasMigrations[version];
+  const migrated = migrate ? migrate(raw) : null;
+  if (!migrated) throw new CanvasStateValidationError();
+  if (!isCanvasDocumentV1(migrated)) throw new CanvasStateValidationError();
+  return migrated;
 }
