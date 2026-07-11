@@ -1,10 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
+import { guardMutationRequest } from "@/lib/server/apiSecurity";
 import { authService } from "@/lib/server/auth";
 import { commentRepository } from "@/lib/server/commentRepository";
 
 export const runtime = "nodejs";
 
 export async function PATCH(request: NextRequest, context: { params: Promise<{ commentId: string }> }) {
+  const denied = await guardMutationRequest(request, { scope: "comments:update" });
+  if (denied) return denied;
+
   const user = await authService.getUserFromRequest(request);
   if (!user) {
     return NextResponse.json({ error: "Authentication required" }, { status: 401 });

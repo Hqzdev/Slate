@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { type WorkspaceRole } from "@prisma/client";
+import { guardMutationRequest } from "@/lib/server/apiSecurity";
 import { authService } from "@/lib/server/auth";
 import { workspaceRepository } from "@/lib/server/workspaceRepository";
 
@@ -8,6 +9,9 @@ export const runtime = "nodejs";
 const roles = new Set<WorkspaceRole>(["owner", "editor", "viewer"]);
 
 export async function PATCH(request: NextRequest, context: { params: Promise<{ memberUserId: string; workspaceId: string }> }) {
+  const denied = await guardMutationRequest(request, { scope: "members:update" });
+  if (denied) return denied;
+
   const user = await authService.getUserFromRequest(request);
   if (!user) {
     return NextResponse.json({ error: "Authentication required" }, { status: 401 });
@@ -31,6 +35,9 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ m
 }
 
 export async function DELETE(request: NextRequest, context: { params: Promise<{ memberUserId: string; workspaceId: string }> }) {
+  const denied = await guardMutationRequest(request, { scope: "members:remove" });
+  if (denied) return denied;
+
   const user = await authService.getUserFromRequest(request);
   if (!user) {
     return NextResponse.json({ error: "Authentication required" }, { status: 401 });

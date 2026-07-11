@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { guardMutationRequest } from "@/lib/server/apiSecurity";
 import { gitImportService } from "@/lib/server/gitImportService";
 import { authService } from "@/lib/server/auth";
 import { workspaceRepository } from "@/lib/server/workspaceRepository";
@@ -6,6 +7,9 @@ import { workspaceRepository } from "@/lib/server/workspaceRepository";
 export const runtime = "nodejs";
 
 export async function POST(request: NextRequest, context: { params: Promise<{ workspaceId: string }> }) {
+  const denied = await guardMutationRequest(request, { limit: 10, scope: "imports:git", windowMs: 60_000 });
+  if (denied) return denied;
+
   const user = await authService.getUserFromRequest(request);
   if (!user) {
     return NextResponse.json({ error: "Authentication required" }, { status: 401 });

@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
-import { prisma } from "@/lib/server/prisma";
+import { prisma } from "./prisma";
+import { workspaceAccessPolicy } from "./workspaceAccessPolicy";
 
 export type ActivityEventPayload = {
   actorName: string | null;
@@ -20,7 +21,7 @@ type ActivityEventInput = {
 
 export class ActivityRepository {
   async listWorkspaceEvents(userId: string, workspaceId: string): Promise<ActivityEventPayload[]> {
-    await this.requireWorkspaceReader(userId, workspaceId);
+    await workspaceAccessPolicy.requireWorkspaceReader(userId, workspaceId);
     const events = await prisma.activityEvent.findMany({
       include: {
         actor: { select: { name: true } },
@@ -55,21 +56,6 @@ export class ActivityRepository {
         workspaceId: input.workspaceId
       }
     });
-  }
-
-  private async requireWorkspaceReader(userId: string, workspaceId: string) {
-    const member = await prisma.workspaceMember.findUnique({
-      where: {
-        userId_workspaceId: {
-          userId,
-          workspaceId
-        }
-      }
-    });
-
-    if (!member) {
-      throw new Error("Workspace access denied");
-    }
   }
 }
 

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { guardMutationRequest } from "@/lib/server/apiSecurity";
 import { authService } from "@/lib/server/auth";
 import { commentRepository } from "@/lib/server/commentRepository";
+import { parseCreateCommentInput } from "@/lib/comments/commentInput";
 
 export const runtime = "nodejs";
 
@@ -21,20 +23,19 @@ export async function GET(request: NextRequest, context: { params: Promise<{ doc
 }
 
 export async function POST(request: NextRequest, context: { params: Promise<{ documentId: string }> }) {
+  const denied = await guardMutationRequest(request, { scope: "comments:create" });
+  if (denied) return denied;
+
   const user = await authService.getUserFromRequest(request);
   if (!user) {
     return NextResponse.json({ error: "Authentication required" }, { status: 401 });
   }
 
-  const body = await request.json();
+  const body = parseCreateCommentInput(await request.json());
   const { documentId } = await context.params;
 
   try {
-    const comment = await commentRepository.createDocumentComment(user.id, documentId, {
-      body: typeof body.body === "string" ? body.body : "",
-      fileNodeId: typeof body.fileNodeId === "string" ? body.fileNodeId : null,
-      shapeId: typeof body.shapeId === "string" ? body.shapeId : null
-    });
+    const comment = await commentRepository.createDocumentComment(user.id, documentId, body);
     return NextResponse.json({ comment }, { status: 201 });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Comment creation failed" }, { status: 403 });

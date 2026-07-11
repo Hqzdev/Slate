@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { type WorkspaceRole } from "@prisma/client";
 import { activityRepository } from "@/lib/server/activityRepository";
+import { auditLogService } from "@/lib/server/auditLog";
 import { prisma } from "@/lib/server/prisma";
 
 const inviteDurationMs = 1000 * 60 * 60 * 24 * 7;
@@ -40,6 +41,12 @@ export class InviteRepository {
         }
       });
       await activityRepository.recordWithClient(transaction, {
+        actorUserId: input.createdByUserId,
+        metadata: { email: normalizedEmail, inviteId: createdInvite.id, role: input.role },
+        type: "invite.created",
+        workspaceId: input.workspaceId
+      });
+      await auditLogService.recordWithClient(transaction, {
         actorUserId: input.createdByUserId,
         metadata: { email: normalizedEmail, inviteId: createdInvite.id, role: input.role },
         type: "invite.created",
@@ -119,6 +126,12 @@ export class InviteRepository {
         type: "invite.revoked",
         workspaceId
       });
+      await auditLogService.recordWithClient(transaction, {
+        actorUserId: userId,
+        metadata: { email: invite.email, inviteId: invite.id, role: invite.role },
+        type: "invite.revoked",
+        workspaceId
+      });
     });
     return { id: invite.id };
   }
@@ -191,6 +204,12 @@ export class InviteRepository {
         where: { id: invite.id }
       });
       await activityRepository.recordWithClient(transaction, {
+        actorUserId: userId,
+        metadata: { email: invite.email, inviteId: invite.id, role: nextRole },
+        type: "invite.accepted",
+        workspaceId: invite.workspaceId
+      });
+      await auditLogService.recordWithClient(transaction, {
         actorUserId: userId,
         metadata: { email: invite.email, inviteId: invite.id, role: nextRole },
         type: "invite.accepted",

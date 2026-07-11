@@ -1,10 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
+import { guardMutationRequest } from "@/lib/server/apiSecurity";
 import { authService } from "@/lib/server/auth";
 import { workspaceRepository } from "@/lib/server/workspaceRepository";
 
 export const runtime = "nodejs";
 
 export async function POST(request: NextRequest, context: { params: Promise<{ documentId: string; snapshotId: string }> }) {
+  const denied = await guardMutationRequest(request, { scope: "snapshots:restore" });
+  if (denied) return denied;
+
   const user = await authService.getUserFromRequest(request);
   if (!user) {
     return NextResponse.json({ error: "Authentication required" }, { status: 401 });

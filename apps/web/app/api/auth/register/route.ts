@@ -1,14 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
+import { guardMutationRequest } from "@/lib/server/apiSecurity";
 import { authService } from "@/lib/server/auth";
+import { auditLogService } from "@/lib/server/auditLog";
 import { passwordService } from "@/lib/server/password";
 import { prisma } from "@/lib/server/prisma";
 import { workspaceRepository } from "@/lib/server/workspaceRepository";
 
 export const runtime = "nodejs";
 
-const colors = ["blue", "violet", "teal", "gray"] as const;
+const colors = ["blue", "violet", "teal", "green", "pink", "orange", "gray"] as const;
 
 export async function POST(request: NextRequest) {
+  const denied = await guardMutationRequest(request, { limit: 5, scope: "auth:register", windowMs: 60_000 });
+  if (denied) return denied;
+
   const body = await request.json();
   const name = typeof body.name === "string" ? body.name.trim() : "";
   const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
@@ -35,7 +40,12 @@ export async function POST(request: NextRequest) {
   });
 
   await workspaceRepository.createDefaultWorkspaceForUser(user.id, name);
-  const session = await authService.createSession(user.id);
+  await auditLogService.record({
+    actorUserId: user.id,
+    metadata: { email: user.email },
+    type: "auth.registered"
+  });
+  const session = await authService.createSession(user.id, request);
   const response = NextResponse.json({ user: publicUser(user) }, { status: 201 });
   authService.setSessionCookie(response, session.token, session.expiresAt);
   return response;

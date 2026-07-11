@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { type WorkspaceRole } from "@prisma/client";
+import { guardMutationRequest } from "@/lib/server/apiSecurity";
 import { authService } from "@/lib/server/auth";
 import { inviteRepository } from "@/lib/server/inviteRepository";
 
@@ -24,6 +25,9 @@ export async function GET(request: NextRequest, context: { params: Promise<{ wor
 }
 
 export async function POST(request: NextRequest, context: { params: Promise<{ workspaceId: string }> }) {
+  const denied = await guardMutationRequest(request, { limit: 20, scope: "invites:create", windowMs: 60_000 });
+  if (denied) return denied;
+
   const user = await authService.getUserFromRequest(request);
   if (!user) {
     return NextResponse.json({ error: "Authentication required" }, { status: 401 });

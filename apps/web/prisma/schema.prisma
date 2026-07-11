@@ -2,11 +2,6 @@ generator client {
   provider = "prisma-client-js"
 }
 
-generator syncClient {
-  provider = "prisma-client-js"
-  output   = "../../../services/sync/generated/prisma"
-}
-
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
@@ -36,6 +31,63 @@ enum FileNodeKind {
   document
 }
 
+enum AiMessageRole {
+  user
+  assistant
+}
+
+enum AiMessageStatus {
+  pending
+  completed
+  failed
+}
+
+enum AiMessageMode {
+  ask
+  plan
+  agent
+}
+
+enum AiDraftActionType {
+  create_document
+  create_note
+  create_table_note
+  create_canvas_diagram
+  update_document
+}
+
+enum AiDraftActionStatus {
+  pending
+  applying
+  applied
+  discarded
+  failed
+}
+
+enum AiAgentTaskStatus {
+  awaiting_confirmation
+  running
+  completed
+  blocked
+  stopped
+  failed
+}
+
+enum AiAgentStepStatus {
+  running
+  completed
+  failed
+}
+
+enum AiAgentActionType {
+  read
+  create
+  update
+  create_diagram
+  run
+  inspect_run
+}
+
 model User {
   id              String            @id @default(cuid())
   email           String            @unique
@@ -52,33 +104,64 @@ model User {
   sessions        Session[]
   invitesCreated  WorkspaceInvite[] @relation("InviteCreator")
   invitesAccepted WorkspaceInvite[] @relation("InviteAccepter")
+  aiConversations AiConversation[]
+  aiDraftActions  AiDraftAction[]
+  aiAgentTasks    AiAgentTask[]
 }
 
 model Session {
-  id        String   @id @default(cuid())
-  tokenHash String   @unique
-  expiresAt DateTime
-  createdAt DateTime @default(now())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id         String   @id @default(cuid())
+  tokenHash  String   @unique
+  deviceName String?
+  ipAddress  String?
+  lastSeenAt DateTime @default(now())
+  userAgent  String?
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([userId, lastSeenAt])
   @@index([expiresAt])
 }
 
 model Workspace {
-  id        String            @id @default(cuid())
-  slug      String            @unique
-  name      String
-  createdAt DateTime          @default(now())
-  updatedAt DateTime          @updatedAt
-  activity  ActivityEvent[]
-  comments  DocumentComment[]
-  members   WorkspaceMember[]
-  documents Document[]
-  fileNodes WorkspaceFileNode[]
-  jobRuns   JobRun[]
-  invites   WorkspaceInvite[]
+  id              String              @id @default(cuid())
+  slug            String              @unique
+  name            String
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  activity        ActivityEvent[]
+  comments        DocumentComment[]
+  members         WorkspaceMember[]
+  documents       Document[]
+  fileNodes       WorkspaceFileNode[]
+  jobRuns         JobRun[]
+  invites         WorkspaceInvite[]
+  settings        WorkspaceSettings?
+  aiConversations AiConversation[]
+  aiDraftActions  AiDraftAction[]
+  aiAgentTasks    AiAgentTask[]
+}
+
+model WorkspaceSettings {
+  id                       String        @id @default(cuid())
+  description              String        @default("")
+  defaultInviteRole        WorkspaceRole @default(viewer)
+  allowEditorInvites       Boolean       @default(false)
+  allowViewerComments      Boolean       @default(true)
+  allowEditorFileDelete    Boolean       @default(true)
+  showCollaboratorPresence Boolean       @default(true)
+  showDocumentActivity     Boolean       @default(true)
+  fileTreeSortMode         String        @default("manual")
+  autoSaveEnabled          Boolean       @default(true)
+  retentionDays            Int           @default(90)
+  exportIncludesActivity   Boolean       @default(true)
+  createdAt                DateTime      @default(now())
+  updatedAt                DateTime      @updatedAt
+  workspaceId              String        @unique
+  workspace                Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 }
 
 model WorkspaceInvite {
@@ -113,24 +196,25 @@ model WorkspaceMember {
 }
 
 model Document {
-  id          String             @id @default(cuid())
-  title       String
-  type        DocumentType
-  language    String?
-  content     String             @default("")
-  canvasState Json?
-  position    Int
-  archivedAt  DateTime?
-  createdAt   DateTime           @default(now())
-  updatedAt   DateTime           @updatedAt
-  workspaceId String
-  workspace   Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  snapshots   DocumentSnapshot[]
-  realtime    DocumentRealtime?
-  jobRuns     JobRun[]
-  fileNode    WorkspaceFileNode?
-  activity    ActivityEvent[]
-  comments    DocumentComment[]
+  id             String             @id @default(cuid())
+  title          String
+  type           DocumentType
+  language       String?
+  content        String             @default("")
+  canvasState    Json?
+  position       Int
+  archivedAt     DateTime?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  workspaceId    String
+  workspace      Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  snapshots      DocumentSnapshot[]
+  realtime       DocumentRealtime?
+  jobRuns        JobRun[]
+  fileNode       WorkspaceFileNode?
+  activity       ActivityEvent[]
+  comments       DocumentComment[]
+  aiDraftActions AiDraftAction[]    @relation("AiDraftResultDocument")
 
   @@index([workspaceId, position])
   @@index([workspaceId, archivedAt])
@@ -157,6 +241,8 @@ model DocumentComment {
   body         String
   shapeId      String?
   fileNodeId   String?
+  lineStart    Int?
+  lineEnd      Int?
   resolvedAt   DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
@@ -184,9 +270,9 @@ model WorkspaceFileNode {
   parentId    String?
   documentId  String?             @unique
   workspace   Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  parent      WorkspaceFileNode?   @relation("FileNodeChildren", fields: [parentId], references: [id], onDelete: Cascade)
-  children    WorkspaceFileNode[]  @relation("FileNodeChildren")
-  document    Document?            @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  parent      WorkspaceFileNode?  @relation("FileNodeChildren", fields: [parentId], references: [id], onDelete: Cascade)
+  children    WorkspaceFileNode[] @relation("FileNodeChildren")
+  document    Document?           @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId, parentId, position])
   @@index([workspaceId, archivedAt])
@@ -233,4 +319,148 @@ model JobRun {
 
   @@index([workspaceId, createdAt])
   @@index([documentId, createdAt])
+}
+
+model AuditEvent {
+  id           String   @id @default(cuid())
+  type         String
+  metadata     Json?
+  createdAt    DateTime @default(now())
+  actorUserId  String?
+  targetUserId String?
+  workspaceId  String?
+  documentId   String?
+
+  @@index([type, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([targetUserId, createdAt])
+  @@index([workspaceId, createdAt])
+  @@index([documentId, createdAt])
+}
+
+model AiConversation {
+  id           String          @id @default(cuid())
+  publicId     String          @unique
+  title        String          @default("Workspace chat")
+  archivedAt   DateTime?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  workspaceId  String
+  ownerUserId  String
+  workspace    Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  owner        User            @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  messages     AiMessage[]
+  draftActions AiDraftAction[]
+  agentTasks   AiAgentTask[]
+
+  @@index([workspaceId, ownerUserId, archivedAt, updatedAt])
+  @@index([ownerUserId, updatedAt])
+}
+
+model AiMessage {
+  id                  String          @id @default(cuid())
+  role                AiMessageRole
+  status              AiMessageStatus @default(completed)
+  mode                AiMessageMode   @default(ask)
+  content             String
+  errorCode           String?
+  providerRequestId   String?
+  clientRequestId     String?
+  activeDocumentId    String?
+  processingLeaseId   String?
+  processingStartedAt DateTime?
+  createdAt           DateTime        @default(now())
+  conversationId      String
+  inReplyToMessageId  String?         @unique
+  conversation        AiConversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  inReplyTo           AiMessage?      @relation("AiMessageReply", fields: [inReplyToMessageId], references: [id], onDelete: Cascade)
+  response            AiMessage?      @relation("AiMessageReply")
+  draftActions        AiDraftAction[]
+  plannedAgentTasks   AiAgentTask[]     @relation("AiAgentPlanMessage")
+
+  @@unique([conversationId, clientRequestId])
+  @@index([conversationId, createdAt, id])
+}
+
+model AiDraftAction {
+  id                  String              @id @default(cuid())
+  type                AiDraftActionType
+  status              AiDraftActionStatus @default(pending)
+  payload             Json
+  errorCode           String?
+  expiresAt           DateTime
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  appliedAt           DateTime?
+  discardedAt         DateTime?
+  workspaceId         String
+  ownerUserId         String
+  conversationId      String
+  proposedByMessageId String
+  resultDocumentId    String?
+  workspace           Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  owner               User                @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  conversation        AiConversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  proposedByMessage   AiMessage           @relation(fields: [proposedByMessageId], references: [id], onDelete: Cascade)
+  resultDocument      Document?           @relation("AiDraftResultDocument", fields: [resultDocumentId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId, status, createdAt])
+  @@index([workspaceId, ownerUserId, status])
+  @@index([expiresAt, status])
+}
+
+model AiAgentTask {
+  id                 String            @id @default(cuid())
+  status             AiAgentTaskStatus @default(awaiting_confirmation)
+  prompt             String
+  plan               String
+  summary            String?
+  errorCode          String?
+  clientRequestId    String
+  activeDocumentId   String?
+  providerMessages    Json?
+  observations        Json?
+  processingLeaseId   String?
+  processingStartedAt DateTime?
+  toolCallCount      Int               @default(0)
+  writeBytes         Int               @default(0)
+  runCount           Int               @default(0)
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+  confirmedAt        DateTime?
+  completedAt        DateTime?
+  stoppedAt          DateTime?
+  workspaceId        String
+  ownerUserId        String
+  conversationId     String
+  planMessageId      String
+  workspace          Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  owner              User              @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  conversation       AiConversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  planMessage        AiMessage          @relation("AiAgentPlanMessage", fields: [planMessageId], references: [id], onDelete: Cascade)
+  steps              AiAgentStep[]
+
+  @@unique([workspaceId, ownerUserId, clientRequestId])
+  @@index([workspaceId, ownerUserId, status, updatedAt])
+  @@index([conversationId, createdAt])
+}
+
+model AiAgentStep {
+  id          String            @id @default(cuid())
+  sequence    Int
+  action      AiAgentActionType
+  status      AiAgentStepStatus @default(running)
+  label       String
+  input       Json?
+  output      Json?
+  errorCode   String?
+  documentId  String?
+  runId       String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  taskId      String
+  task        AiAgentTask       @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, sequence])
+  @@index([taskId, createdAt])
 }

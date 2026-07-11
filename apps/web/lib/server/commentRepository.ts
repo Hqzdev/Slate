@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/server/prisma";
 import { activityRepository } from "@/lib/server/activityRepository";
+import { normalizeCommentLineRange } from "@/lib/comments/commentLineRange";
 
 export type DocumentCommentPayload = {
   authorName: string;
@@ -8,6 +9,8 @@ export type DocumentCommentPayload = {
   documentId: string;
   fileNodeId: string | null;
   id: string;
+  lineEnd: number | null;
+  lineStart: number | null;
   resolvedAt: string | null;
   shapeId: string | null;
   updatedAt: string;
@@ -28,9 +31,27 @@ export class CommentRepository {
     return comments.map((comment) => this.toPayload(comment));
   }
 
-  async createDocumentComment(userId: string, documentId: string, input: { body: string; fileNodeId?: string | null; shapeId?: string | null }) {
+  async listWorkspaceComments(userId: string, workspaceId: string, limit = 20): Promise<DocumentCommentPayload[]> {
+    await this.requireWorkspaceMember(userId, workspaceId);
+    const comments = await prisma.documentComment.findMany({
+      include: { author: { select: { name: true } } },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      where: {
+        document: { archivedAt: null },
+        workspaceId
+      }
+    });
+
+    return comments.map((comment) => this.toPayload(comment));
+  }
+
+  async createDocumentComment(userId: string, documentId: string, input: { body: string; fileNodeId?: string | null; lineEnd?: unknown; lineStart?: unknown; shapeId?: string | null }) {
     const document = await this.requireDocumentEditor(userId, documentId);
     const body = input.body.trim();
+    const lineRange = normalizeCommentLineRange(input.lineStart, input.lineEnd);
+    const fileNodeId = input.fileNodeId?.trim() || null;
+    const shapeId = input.shapeId?.trim() || null;
 
     if (body.length === 0) {
       throw new Error("Comment body is required");
@@ -40,6 +61,28 @@ export class CommentRepository {
       throw new Error("Comment body is too long");
     }
 
+    if (lineRange && shapeId) {
+      throw new Error("Comment context is ambiguous");
+    }
+
+    if (lineRange) {
+      if (document.type !== "code") throw new Error("Line comments require a code document");
+      if (lineRange.end > document.content.split("\n").length) throw new Error("Comment line range is outside the document");
+    }
+
+    if (shapeId) {
+      if (document.type !== "canvas") throw new Error("Shape comments require a canvas document");
+      if (!this.canvasHasShape(document.canvasState, shapeId)) throw new Error("Comment shape context is unavailable");
+    }
+
+    if (fileNodeId) {
+      const fileNode = await prisma.workspaceFileNode.findFirst({
+        select: { id: true },
+        where: { archivedAt: null, documentId: document.id, id: fileNodeId, workspaceId: document.workspaceId }
+      });
+      if (!fileNode) throw new Error("Comment file context is unavailable");
+    }
+
     const comment = await prisma.$transaction(async (transaction) => {
       const createdComment = await transaction.documentComment.create({
         include: { author: { select: { name: true } } },
@@ -47,8 +90,10 @@ export class CommentRepository {
           authorUserId: userId,
           body,
           documentId: document.id,
-          fileNodeId: input.fileNodeId?.trim() || null,
-          shapeId: input.shapeId?.trim() || null,
+          fileNodeId,
+          lineEnd: lineRange?.end ?? null,
+          lineStart: lineRange?.start ?? null,
+          shapeId,
           workspaceId: document.workspaceId
         }
       });
@@ -118,6 +163,23 @@ export class CommentRepository {
     return this.toPayload(updatedComment);
   }
 
+  private async requireWorkspaceMember(userId: string, workspaceId: string) {
+    const member = await prisma.workspaceMember.findUnique({
+      where: {
+        userId_workspaceId: {
+          userId,
+          workspaceId
+        }
+      }
+    });
+
+    if (!member) {
+      throw new Error("Workspace access denied");
+    }
+
+    return member;
+  }
+
   private async requireDocumentReader(userId: string, documentId: string) {
     const document = await prisma.document.findFirstOrThrow({
       select: { id: true, workspaceId: true },
@@ -141,7 +203,7 @@ export class CommentRepository {
 
   private async requireDocumentEditor(userId: string, documentId: string) {
     const document = await prisma.document.findFirstOrThrow({
-      select: { id: true, workspaceId: true },
+      select: { canvasState: true, content: true, id: true, type: true, workspaceId: true },
       where: { archivedAt: null, id: documentId }
     });
     const member = await prisma.workspaceMember.findUnique({
@@ -158,6 +220,12 @@ export class CommentRepository {
     }
 
     return document;
+  }
+
+  private canvasHasShape(canvasState: unknown, shapeId: string) {
+    if (!canvasState || typeof canvasState !== "object") return false;
+    const shapes = (canvasState as { shapes?: unknown }).shapes;
+    return Array.isArray(shapes) && shapes.some((shape) => shape && typeof shape === "object" && (shape as { id?: unknown }).id === shapeId);
   }
 
   private async canResolveComment(userId: string, workspaceId: string) {
@@ -180,6 +248,8 @@ export class CommentRepository {
     documentId: string;
     fileNodeId: string | null;
     id: string;
+    lineEnd: number | null;
+    lineStart: number | null;
     resolvedAt: Date | null;
     shapeId: string | null;
     updatedAt: Date;
@@ -191,6 +261,8 @@ export class CommentRepository {
       documentId: comment.documentId,
       fileNodeId: comment.fileNodeId,
       id: comment.id,
+      lineEnd: comment.lineEnd,
+      lineStart: comment.lineStart,
       resolvedAt: comment.resolvedAt?.toISOString() ?? null,
       shapeId: comment.shapeId,
       updatedAt: comment.updatedAt.toISOString()

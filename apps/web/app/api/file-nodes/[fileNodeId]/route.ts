@@ -1,10 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
+import { guardMutationRequest } from "@/lib/server/apiSecurity";
 import { authService } from "@/lib/server/auth";
 import { workspaceRepository } from "@/lib/server/workspaceRepository";
 
 export const runtime = "nodejs";
 
 export async function PATCH(request: NextRequest, context: { params: Promise<{ fileNodeId: string }> }) {
+  const denied = await guardMutationRequest(request, { scope: "file-nodes:update" });
+  if (denied) return denied;
+
   const user = await authService.getUserFromRequest(request);
   if (!user) {
     return NextResponse.json({ error: "Authentication required" }, { status: 401 });
@@ -37,6 +41,9 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ f
 }
 
 export async function DELETE(request: NextRequest, context: { params: Promise<{ fileNodeId: string }> }) {
+  const denied = await guardMutationRequest(request, { scope: "file-nodes:delete" });
+  if (denied) return denied;
+
   const user = await authService.getUserFromRequest(request);
   if (!user) {
     return NextResponse.json({ error: "Authentication required" }, { status: 401 });

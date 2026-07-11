@@ -1,7 +1,10 @@
 import { Prisma, type DocumentType, type FileNodeKind, type JobStatus, type WorkspaceRole } from "@prisma/client";
-import { normalizeCanvasState } from "@/lib/canvas/canvasDocumentSchema";
+import { createDefaultCanvasState, normalizeCanvasState } from "@/lib/canvas/canvasDocumentSchema";
 import { activityRepository } from "@/lib/server/activityRepository";
+import { auditLogService } from "@/lib/server/auditLog";
 import { prisma } from "@/lib/server/prisma";
+import { workspaceAccessPolicy } from "@/lib/server/workspaceAccessPolicy";
+import { workspaceOwnershipPolicy } from "@/lib/server/workspaceOwnershipPolicy";
 
 export type WorkspaceDocumentPayload = {
   id: string;
@@ -45,6 +48,25 @@ export type WorkspaceMemberPayload = {
   role: WorkspaceRole;
 };
 
+export type WorkspaceSettingsPayload = {
+  allowEditorFileDelete: boolean;
+  allowEditorInvites: boolean;
+  allowViewerComments: boolean;
+  autoSaveEnabled: boolean;
+  defaultInviteRole: WorkspaceRole;
+  description: string;
+  exportIncludesActivity: boolean;
+  fileTreeSortMode: string;
+  retentionDays: number;
+  showCollaboratorPresence: boolean;
+  showDocumentActivity: boolean;
+};
+
+type WorkspaceSettingsRow = WorkspaceSettingsPayload & {
+  id: string;
+  workspaceId: string;
+};
+
 export type WorkspacePayload = {
   activeUser: {
     color: string;
@@ -54,6 +76,7 @@ export type WorkspacePayload = {
     name: string;
   };
   workspaces: {
+    abbreviation: string;
     id: string;
     slug: string;
     name: string;
@@ -61,12 +84,14 @@ export type WorkspacePayload = {
     members: WorkspaceMemberPayload[];
   }[];
   activeWorkspace: {
+    abbreviation: string;
     id: string;
     slug: string;
     name: string;
     documents: WorkspaceDocumentPayload[];
     fileNodes: WorkspaceFileNodePayload[];
     members: WorkspaceMemberPayload[];
+    settings: WorkspaceSettingsPayload;
     jobRuns: {
       id: string;
       status: JobStatus;
@@ -89,9 +114,22 @@ export type WorkspacePayload = {
 export class WorkspaceRepository {
   private readonly automaticSnapshotThrottleMs = 3 * 60 * 1000;
   private readonly maxAutomaticSnapshotsPerDocument = 200;
+  private readonly defaultWorkspaceSettings: WorkspaceSettingsPayload = {
+    allowEditorFileDelete: true,
+    allowEditorInvites: false,
+    allowViewerComments: true,
+    autoSaveEnabled: true,
+    defaultInviteRole: "viewer",
+    description: "",
+    exportIncludesActivity: true,
+    fileTreeSortMode: "manual",
+    retentionDays: 90,
+    showCollaboratorPresence: true,
+    showDocumentActivity: true
+  };
 
   async requireWorkspaceEditor(userId: string, workspaceId: string) {
-    return this.requireWorkspaceRole(userId, workspaceId, ["owner", "editor"]);
+    return workspaceAccessPolicy.requireWorkspaceWriter(userId, workspaceId);
   }
 
   async getWorkspacePayload(userId: string, workspaceId?: string | null): Promise<WorkspacePayload> {
@@ -112,6 +150,7 @@ export class WorkspaceRepository {
     const activeWorkspaceId = requestedWorkspace?.id ?? workspaces[0]?.id ?? null;
     if (activeWorkspaceId) {
       await this.ensureWorkspaceFileNodes(activeWorkspaceId);
+      await this.ensureWorkspaceSettings(activeWorkspaceId);
     }
     const activeWorkspace = activeWorkspaceId
       ? await prisma.workspace.findUnique({
@@ -128,6 +167,7 @@ export class WorkspaceRepository {
           }
         })
       : null;
+    const activeWorkspaceSettings = activeWorkspace ? await this.ensureWorkspaceSettings(activeWorkspace.id) : null;
     const activeMember = activeWorkspace?.members.find((member) => member.userId === userId) ?? null;
     const invites = activeWorkspace && activeMember?.role === "owner"
       ? await prisma.workspaceInvite.findMany({
@@ -158,17 +198,20 @@ export class WorkspaceRepository {
       },
       activeWorkspace: activeWorkspace
         ? {
+            abbreviation: this.workspaceAbbreviation(activeWorkspace.name),
             documents: activeWorkspace.documents.map((document) => this.toDocumentPayload(document)),
             fileNodes: activeWorkspace.fileNodes.map((fileNode) => this.toFileNodePayload(fileNode)),
             id: activeWorkspace.id,
             jobRuns: activeWorkspace.jobRuns.map((jobRun) => ({
               createdAt: jobRun.createdAt.toISOString(),
+              documentId: jobRun.documentId,
               documentTitle: jobRun.document?.title ?? null,
               error: jobRun.error,
               id: jobRun.id,
               kind: jobRun.kind,
               output: jobRun.output,
-              status: jobRun.status
+              status: jobRun.status,
+              updatedAt: jobRun.updatedAt.toISOString()
             })),
             invites: invites.map((invite) => ({
               acceptedAt: invite.acceptedAt?.toISOString() ?? null,
@@ -180,10 +223,12 @@ export class WorkspaceRepository {
             })),
             members: activeWorkspace.members.map((member) => this.toMemberPayload(member)),
             name: activeWorkspace.name,
+            settings: this.toSettingsPayload(activeWorkspaceSettings),
             slug: activeWorkspace.slug
           }
         : null,
       workspaces: workspaces.map((workspace) => ({
+        abbreviation: this.workspaceAbbreviation(workspace.name),
         documentCount: workspace.documents.length,
         id: workspace.id,
         members: workspace.members.map((member) => this.toMemberPayload(member)),
@@ -194,7 +239,7 @@ export class WorkspaceRepository {
   }
 
   async createDocument(userId: string, workspaceId: string, type: DocumentType): Promise<WorkspaceDocumentPayload> {
-    await this.requireWorkspaceRole(userId, workspaceId, ["owner", "editor"]);
+    await workspaceAccessPolicy.requireWorkspaceWriter(userId, workspaceId);
     const count = await prisma.document.count({ where: { archivedAt: null, workspaceId, type } });
     const total = await prisma.document.count({ where: { archivedAt: null, workspaceId } });
     const title = this.defaultTitle(type, count + 1);
@@ -202,6 +247,7 @@ export class WorkspaceRepository {
     const document = await prisma.$transaction(async (transaction) => {
       const createdDocument = await transaction.document.create({
         data: {
+          canvasState: type === "canvas" ? createDefaultCanvasState() : undefined,
           content: this.defaultContent(type, count + 1),
           language: type === "code" ? "typescript" : null,
           position: total,
@@ -245,7 +291,7 @@ export class WorkspaceRepository {
   }
 
   async createFileNode(userId: string, workspaceId: string, input: { extension?: string; kind: FileNodeKind; name: string; parentId?: string | null }) {
-    await this.requireWorkspaceRole(userId, workspaceId, ["owner", "editor"]);
+    await workspaceAccessPolicy.requireWorkspaceWriter(userId, workspaceId);
     const parentId = await this.resolveParentId(workspaceId, input.parentId ?? null);
     const position = await prisma.workspaceFileNode.count({ where: { archivedAt: null, parentId, workspaceId } });
 
@@ -281,6 +327,7 @@ export class WorkspaceRepository {
     const result = await prisma.$transaction(async (transaction) => {
       const document = await transaction.document.create({
         data: {
+          canvasState: documentShape.type === "canvas" ? createDefaultCanvasState() : undefined,
           content: this.defaultFileContent(fileName, documentShape.type),
           language: documentShape.language,
           position: documentPosition,
@@ -292,7 +339,7 @@ export class WorkspaceRepository {
 
       await transaction.documentSnapshot.create({
         data: {
-          canvasState: Prisma.JsonNull,
+          canvasState: document.canvasState ?? Prisma.JsonNull,
           content: document.content,
           documentId: document.id
         }
@@ -327,7 +374,7 @@ export class WorkspaceRepository {
   }
 
   async importDocuments(userId: string, workspaceId: string, documents: ImportedWorkspaceDocument[]): Promise<WorkspaceDocumentPayload[]> {
-    await this.requireWorkspaceRole(userId, workspaceId, ["owner", "editor"]);
+    await workspaceAccessPolicy.requireWorkspaceWriter(userId, workspaceId);
 
     if (documents.length === 0) {
       throw new Error("Import must contain at least one document");
@@ -393,7 +440,7 @@ export class WorkspaceRepository {
       include: { document: true },
       where: { archivedAt: null, id: fileNodeId }
     });
-    await this.requireWorkspaceRole(userId, fileNode.workspaceId, ["owner", "editor"]);
+    await workspaceAccessPolicy.requireWorkspaceWriter(userId, fileNode.workspaceId);
     const normalizedName = fileNode.kind === "folder" ? this.normalizeFileNodeName(name) : this.normalizeFileName(name);
 
     if (normalizedName !== fileNode.name) {
@@ -408,14 +455,20 @@ export class WorkspaceRepository {
 
       if (fileNode.documentId) {
         const documentShape = this.documentShapeForFileName(normalizedName);
+        const documentTypeChanged = Boolean(fileNode.document && fileNode.document.type !== documentShape.type);
         await transaction.document.update({
           data: {
+            canvasState: documentTypeChanged ? documentShape.type === "canvas" ? createDefaultCanvasState() : Prisma.JsonNull : undefined,
+            content: documentTypeChanged && documentShape.type === "canvas" ? "" : undefined,
             language: documentShape.language,
             title: normalizedName,
             type: documentShape.type
           },
           where: { id: fileNode.documentId }
         });
+        if (documentTypeChanged) {
+          await transaction.documentRealtime.deleteMany({ where: { documentId: fileNode.documentId } });
+        }
       }
 
       await activityRepository.recordWithClient(transaction, {
@@ -443,7 +496,7 @@ export class WorkspaceRepository {
     const fileNode = await prisma.workspaceFileNode.findFirstOrThrow({
       where: { archivedAt: null, id: fileNodeId }
     });
-    await this.requireWorkspaceRole(userId, fileNode.workspaceId, ["owner", "editor"]);
+    await workspaceAccessPolicy.requireWorkspaceWriter(userId, fileNode.workspaceId);
     const nextParentId = await this.resolveParentId(fileNode.workspaceId, parentId);
 
     if (nextParentId === fileNode.id) {
@@ -499,7 +552,7 @@ export class WorkspaceRepository {
     const fileNode = await prisma.workspaceFileNode.findFirstOrThrow({
       where: { archivedAt: null, id: fileNodeId }
     });
-    await this.requireWorkspaceRole(userId, fileNode.workspaceId, ["owner", "editor"]);
+    await workspaceAccessPolicy.requireWorkspaceWriter(userId, fileNode.workspaceId);
     const archivedAt = new Date();
     const descendants = await this.collectDescendantFileNodes(fileNode.id);
     const nodeIds = [fileNode.id, ...descendants.map((node) => node.id)];
@@ -552,7 +605,7 @@ export class WorkspaceRepository {
       include: { fileNode: true },
       where: { archivedAt: null, id: documentId }
     });
-    await this.requireWorkspaceRole(userId, existingDocument.workspaceId, ["owner", "editor"]);
+    await workspaceAccessPolicy.requireWorkspaceWriter(userId, existingDocument.workspaceId);
 
     const title = input.title === undefined ? undefined : this.normalizeDocumentTitle(input.title);
     if (title && existingDocument.fileNode) {
@@ -561,16 +614,28 @@ export class WorkspaceRepository {
 
     const document = await prisma.$transaction(async (transaction) => {
       const documentShape = title ? this.documentShapeForFileName(title) : null;
+      const documentTypeChanged = Boolean(documentShape && documentShape.type !== existingDocument.type);
+      const targetDocumentType = documentShape?.type ?? existingDocument.type;
+      const canvasState = targetDocumentType === "canvas"
+        ? input.canvasState === undefined
+          ? documentTypeChanged ? createDefaultCanvasState() : undefined
+          : input.canvasState === null ? createDefaultCanvasState() : normalizeCanvasState(input.canvasState)
+        : documentTypeChanged ? Prisma.JsonNull : undefined;
+      const content = input.content === undefined && documentTypeChanged && documentShape?.type === "canvas" ? "" : input.content;
       const updatedDocument = await transaction.document.update({
         where: { id: documentId },
         data: {
-          canvasState: input.canvasState === undefined ? undefined : input.canvasState === null ? Prisma.JsonNull : normalizeCanvasState(input.canvasState),
-          content: input.content,
+          canvasState,
+          content,
           language: documentShape?.language,
           type: documentShape?.type,
           title
         }
       });
+
+      if (documentTypeChanged) {
+        await transaction.documentRealtime.deleteMany({ where: { documentId } });
+      }
 
       if (title && existingDocument.fileNode) {
         await transaction.workspaceFileNode.update({
@@ -612,7 +677,7 @@ export class WorkspaceRepository {
     const document = await prisma.document.findFirstOrThrow({
       where: { archivedAt: null, id: documentId }
     });
-    await this.requireWorkspaceRole(userId, document.workspaceId, ["owner", "editor"]);
+    await workspaceAccessPolicy.requireWorkspaceWriter(userId, document.workspaceId);
 
     const snapshot = await prisma.documentSnapshot.create({
       data: {
@@ -630,7 +695,7 @@ export class WorkspaceRepository {
     const document = await prisma.document.findFirstOrThrow({
       where: { archivedAt: null, id: documentId }
     });
-    await this.requireWorkspaceRole(userId, document.workspaceId, ["editor", "owner", "viewer"]);
+    await workspaceAccessPolicy.requireWorkspaceReader(userId, document.workspaceId);
 
     const snapshots = await prisma.documentSnapshot.findMany({
       orderBy: { createdAt: "desc" },
@@ -646,7 +711,7 @@ export class WorkspaceRepository {
     const document = await prisma.document.findFirstOrThrow({
       where: { archivedAt: null, id: documentId }
     });
-    await this.requireWorkspaceRole(userId, document.workspaceId, ["owner", "editor"]);
+    await workspaceAccessPolicy.requireWorkspaceWriter(userId, document.workspaceId);
 
     const snapshot = await prisma.documentSnapshot.findFirstOrThrow({
       where: { documentId, id: snapshotId }
@@ -689,7 +754,7 @@ export class WorkspaceRepository {
       include: { fileNode: true },
       where: { archivedAt: null, id: documentId }
     });
-    await this.requireWorkspaceRole(userId, existingDocument.workspaceId, ["owner", "editor"]);
+    await workspaceAccessPolicy.requireWorkspaceWriter(userId, existingDocument.workspaceId);
 
     await prisma.$transaction(async (transaction) => {
       await transaction.document.update({
@@ -731,7 +796,7 @@ export class WorkspaceRepository {
   }
 
   async reorderDocuments(userId: string, workspaceId: string, documentIds: string[]) {
-    await this.requireWorkspaceRole(userId, workspaceId, ["owner", "editor"]);
+    await workspaceAccessPolicy.requireWorkspaceWriter(userId, workspaceId);
 
     const uniqueDocumentIds = new Set(documentIds);
     if (uniqueDocumentIds.size !== documentIds.length || documentIds.length === 0) {
@@ -785,7 +850,7 @@ export class WorkspaceRepository {
       include: { workspace: true },
       where: { archivedAt: null, id: documentId }
     });
-    await this.requireWorkspaceRole(userId, document.workspaceId, ["owner", "editor"]);
+    await workspaceAccessPolicy.requireWorkspaceWriter(userId, document.workspaceId);
 
     const run = await prisma.$transaction(async (transaction) => {
       const createdRun = await transaction.jobRun.create({
@@ -805,6 +870,13 @@ export class WorkspaceRepository {
         type: "run.queued",
         workspaceId: document.workspaceId
       });
+      await auditLogService.recordWithClient(transaction, {
+        actorUserId: userId,
+        documentId: document.id,
+        metadata: { environmentId, runId: createdRun.id },
+        type: "run.queued",
+        workspaceId: document.workspaceId
+      });
       return createdRun;
     });
 
@@ -817,18 +889,20 @@ export class WorkspaceRepository {
       },
       run: {
         createdAt: run.createdAt.toISOString(),
+        documentId: document.id,
         documentTitle: document.title,
         error: run.error,
         id: run.id,
         kind: run.kind,
         output: run.output,
-        status: run.status
+        status: run.status,
+        updatedAt: run.updatedAt.toISOString()
       }
     };
   }
 
   async listRuns(userId: string, workspaceId: string) {
-    await this.requireWorkspaceRole(userId, workspaceId, ["owner", "editor", "viewer"]);
+    await workspaceAccessPolicy.requireWorkspaceReader(userId, workspaceId);
     const runs = await prisma.jobRun.findMany({
       include: { document: true },
       orderBy: { createdAt: "desc" },
@@ -838,17 +912,23 @@ export class WorkspaceRepository {
 
     return runs.map((run) => ({
       createdAt: run.createdAt.toISOString(),
+      documentId: run.documentId,
       documentTitle: run.document?.title ?? null,
       error: run.error,
       id: run.id,
       kind: run.kind,
       output: run.output,
-      status: run.status
+      status: run.status,
+      updatedAt: run.updatedAt.toISOString()
     }));
   }
 
   async updateWorkspaceMemberRole(userId: string, workspaceId: string, memberUserId: string, role: WorkspaceRole) {
-    await this.requireWorkspaceRole(userId, workspaceId, ["owner"]);
+    await workspaceAccessPolicy.requireWorkspaceOwner(userId, workspaceId);
+    if (userId === memberUserId) {
+      throw new Error("You cannot change your own role");
+    }
+
     const member = await prisma.workspaceMember.findUniqueOrThrow({
       include: { user: true },
       where: {
@@ -860,7 +940,7 @@ export class WorkspaceRepository {
     });
 
     if (member.role === "owner" && role !== "owner") {
-      await this.requireAnotherWorkspaceOwner(workspaceId, member.userId);
+      await workspaceOwnershipPolicy.requireAnotherOwner(workspaceId, member.userId);
     }
 
     const updatedMember = await prisma.$transaction(async (transaction) => {
@@ -880,6 +960,13 @@ export class WorkspaceRepository {
         type: "member.role_changed",
         workspaceId
       });
+      await auditLogService.recordWithClient(transaction, {
+        actorUserId: userId,
+        metadata: { from: member.role, memberName: member.user.name, to: role },
+        targetUserId: memberUserId,
+        type: "member.role_changed",
+        workspaceId
+      });
       return updated;
     });
 
@@ -887,11 +974,9 @@ export class WorkspaceRepository {
   }
 
   async removeWorkspaceMember(userId: string, workspaceId: string, memberUserId: string) {
-    await this.requireWorkspaceRole(userId, workspaceId, ["owner"]);
+    await workspaceAccessPolicy.requireWorkspaceOwner(userId, workspaceId);
 
-    if (userId === memberUserId) {
-      throw new Error("You cannot remove yourself from the workspace");
-    }
+    workspaceOwnershipPolicy.assertMemberCanBeRemoved(userId, memberUserId);
 
     const member = await prisma.workspaceMember.findUniqueOrThrow({
       include: { user: true },
@@ -904,7 +989,7 @@ export class WorkspaceRepository {
     });
 
     if (member.role === "owner") {
-      await this.requireAnotherWorkspaceOwner(workspaceId, member.userId);
+      await workspaceOwnershipPolicy.requireAnotherOwner(workspaceId, member.userId);
     }
 
     await prisma.$transaction(async (transaction) => {
@@ -922,14 +1007,22 @@ export class WorkspaceRepository {
         type: "member.removed",
         workspaceId
       });
+      await auditLogService.recordWithClient(transaction, {
+        actorUserId: userId,
+        metadata: { memberName: member.user.name, role: member.role },
+        targetUserId: memberUserId,
+        type: "member.removed",
+        workspaceId
+      });
     });
 
     return { userId: memberUserId };
   }
 
-  async createDefaultWorkspaceForUser(userId: string, name: string) {
+  async createDefaultWorkspaceForUser(userId: string, userName: string, workspaceName?: string) {
+    const name = workspaceName?.trim() || `${userName}'s Workspace`;
     const slugBase = this.slugify(name);
-    const slug = await this.uniqueWorkspaceSlug(`${slugBase}-workspace`);
+    const slug = await this.uniqueWorkspaceSlug(slugBase || "workspace");
     const workspace = await prisma.workspace.create({
       data: {
         members: {
@@ -938,10 +1031,11 @@ export class WorkspaceRepository {
             userId
           }
         },
-        name: `${name}'s Workspace`,
+        name,
         slug
       }
     });
+    await this.ensureWorkspaceSettings(workspace.id);
 
     await prisma.document.createMany({
       data: [
@@ -967,47 +1061,78 @@ export class WorkspaceRepository {
     return workspace;
   }
 
+  async getWorkspaceSettings(userId: string, workspaceId: string): Promise<WorkspaceSettingsPayload> {
+    await workspaceAccessPolicy.requireWorkspaceReader(userId, workspaceId);
+    const settings = await this.ensureWorkspaceSettings(workspaceId);
+    return this.toSettingsPayload(settings);
+  }
+
+  async updateWorkspaceIdentity(userId: string, workspaceId: string, input: { name: string }) {
+    await workspaceAccessPolicy.requireWorkspaceOwner(userId, workspaceId);
+    const name = this.normalizeWorkspaceName(input.name);
+    const slug = await this.uniqueWorkspaceSlug(this.slugify(name), workspaceId);
+    const workspace = await prisma.workspace.update({
+      data: { name, slug },
+      where: { id: workspaceId }
+    });
+
+    await activityRepository.record({
+      actorUserId: userId,
+      metadata: { name: workspace.name },
+      type: "workspace.renamed",
+      workspaceId
+    });
+    await auditLogService.record({
+      actorUserId: userId,
+      metadata: { name: workspace.name, slug: workspace.slug },
+      type: "workspace.renamed",
+      workspaceId
+    });
+
+    return {
+      abbreviation: this.workspaceAbbreviation(workspace.name),
+      id: workspace.id,
+      name: workspace.name,
+      slug: workspace.slug
+    };
+  }
+
+  async updateWorkspaceSettings(userId: string, workspaceId: string, settings: Partial<WorkspaceSettingsPayload>): Promise<WorkspaceSettingsPayload> {
+    await workspaceAccessPolicy.requireWorkspaceOwner(userId, workspaceId);
+    const current = await this.ensureWorkspaceSettings(workspaceId);
+    const nextSettings = this.toSettingsPayload({ ...current, ...settings });
+    await prisma.$executeRaw`
+      UPDATE "WorkspaceSettings"
+      SET
+        "description" = ${nextSettings.description},
+        "defaultInviteRole" = ${nextSettings.defaultInviteRole}::"WorkspaceRole",
+        "allowEditorInvites" = ${nextSettings.allowEditorInvites},
+        "allowViewerComments" = ${nextSettings.allowViewerComments},
+        "allowEditorFileDelete" = ${nextSettings.allowEditorFileDelete},
+        "showCollaboratorPresence" = ${nextSettings.showCollaboratorPresence},
+        "showDocumentActivity" = ${nextSettings.showDocumentActivity},
+        "fileTreeSortMode" = ${nextSettings.fileTreeSortMode},
+        "autoSaveEnabled" = ${nextSettings.autoSaveEnabled},
+        "retentionDays" = ${nextSettings.retentionDays},
+        "exportIncludesActivity" = ${nextSettings.exportIncludesActivity},
+        "updatedAt" = NOW()
+      WHERE "id" = ${current.id}
+    `;
+    await auditLogService.record({
+      actorUserId: userId,
+      metadata: settings,
+      type: "workspace.settings.updated",
+      workspaceId
+    });
+    return nextSettings;
+  }
+
   async canAccessRealtimeRoom(userId: string, roomName: string) {
     return Boolean(await this.authorizeRealtimeRoom(userId, roomName));
   }
 
   async authorizeRealtimeRoom(userId: string, roomName: string) {
-    const parsedRoom = this.parseRoomName(roomName);
-    if (!parsedRoom) return null;
-
-    const member = await prisma.workspaceMember.findUnique({
-      include: { user: true },
-      where: {
-        userId_workspaceId: {
-          userId,
-          workspaceId: parsedRoom.workspaceId
-        }
-      }
-    });
-
-    if (!member) return null;
-
-    const document = await prisma.document.findFirst({
-      select: { id: true },
-      where: {
-        archivedAt: null,
-        id: parsedRoom.documentId,
-        type: parsedRoom.documentType,
-        workspaceId: parsedRoom.workspaceId
-      }
-    });
-
-    if (!document) return null;
-
-    return {
-      color: member.user.color,
-      email: member.user.email,
-      id: member.user.id,
-      initials: member.user.initials,
-      name: member.user.name,
-      role: member.role,
-      canWrite: member.role === "owner" || member.role === "editor"
-    };
+    return workspaceAccessPolicy.authorizeRealtimeRoom(userId, roomName);
   }
 
   private defaultContent(type: DocumentType, index: number) {
@@ -1026,37 +1151,6 @@ export class WorkspaceRepository {
     if (type === "code") return `scratch-${index}.ts`;
     if (type === "note") return `Note ${index}`;
     return `Canvas ${index}`;
-  }
-
-  private async requireWorkspaceRole(userId: string, workspaceId: string, roles: WorkspaceRole[]) {
-    const member = await prisma.workspaceMember.findUnique({
-      where: {
-        userId_workspaceId: {
-          userId,
-          workspaceId
-        }
-      }
-    });
-
-    if (!member || !roles.includes(member.role)) {
-      throw new Error("Workspace access denied");
-    }
-
-    return member;
-  }
-
-  private async requireAnotherWorkspaceOwner(workspaceId: string, userId: string) {
-    const ownerCount = await prisma.workspaceMember.count({
-      where: {
-        role: "owner",
-        workspaceId,
-        userId: { not: userId }
-      }
-    });
-
-    if (ownerCount === 0) {
-      throw new Error("Workspace must keep at least one owner");
-    }
   }
 
   private async resolveParentId(workspaceId: string, parentId: string | null) {
@@ -1229,6 +1323,82 @@ export class WorkspaceRepository {
     });
   }
 
+  private async ensureWorkspaceSettings(workspaceId: string) {
+    const settings = await prisma.$queryRaw<WorkspaceSettingsRow[]>`
+      SELECT
+        "id",
+        "description",
+        "defaultInviteRole",
+        "allowEditorInvites",
+        "allowViewerComments",
+        "allowEditorFileDelete",
+        "showCollaboratorPresence",
+        "showDocumentActivity",
+        "fileTreeSortMode",
+        "autoSaveEnabled",
+        "retentionDays",
+        "exportIncludesActivity",
+        "workspaceId"
+      FROM "WorkspaceSettings"
+      WHERE "workspaceId" = ${workspaceId}
+      LIMIT 1
+    `;
+
+    if (settings[0]) return settings[0];
+
+    const createdSettings = await prisma.$queryRaw<WorkspaceSettingsRow[]>`
+      INSERT INTO "WorkspaceSettings" (
+        "id",
+        "description",
+        "defaultInviteRole",
+        "allowEditorInvites",
+        "allowViewerComments",
+        "allowEditorFileDelete",
+        "showCollaboratorPresence",
+        "showDocumentActivity",
+        "fileTreeSortMode",
+        "autoSaveEnabled",
+        "retentionDays",
+        "exportIncludesActivity",
+        "workspaceId",
+        "updatedAt"
+      )
+      VALUES (
+        ${`wsset_${workspaceId}`},
+        ${this.defaultWorkspaceSettings.description},
+        ${this.defaultWorkspaceSettings.defaultInviteRole}::"WorkspaceRole",
+        ${this.defaultWorkspaceSettings.allowEditorInvites},
+        ${this.defaultWorkspaceSettings.allowViewerComments},
+        ${this.defaultWorkspaceSettings.allowEditorFileDelete},
+        ${this.defaultWorkspaceSettings.showCollaboratorPresence},
+        ${this.defaultWorkspaceSettings.showDocumentActivity},
+        ${this.defaultWorkspaceSettings.fileTreeSortMode},
+        ${this.defaultWorkspaceSettings.autoSaveEnabled},
+        ${this.defaultWorkspaceSettings.retentionDays},
+        ${this.defaultWorkspaceSettings.exportIncludesActivity},
+        ${workspaceId},
+        NOW()
+      )
+      ON CONFLICT ("workspaceId") DO UPDATE SET "updatedAt" = "WorkspaceSettings"."updatedAt"
+      RETURNING
+        "id",
+        "description",
+        "defaultInviteRole",
+        "allowEditorInvites",
+        "allowViewerComments",
+        "allowEditorFileDelete",
+        "showCollaboratorPresence",
+        "showDocumentActivity",
+        "fileTreeSortMode",
+        "autoSaveEnabled",
+        "retentionDays",
+        "exportIncludesActivity",
+        "workspaceId"
+    `;
+
+    return createdSettings[0] ?? { ...this.defaultWorkspaceSettings, id: `wsset_${workspaceId}`, workspaceId };
+  }
+
   private async ensureFolderPath(transaction: Prisma.TransactionClient, workspaceId: string, folderPath: string[]) {
     let parentId: string | null = null;
 
@@ -1324,22 +1494,6 @@ export class WorkspaceRepository {
     return descendants;
   }
 
-  private parseRoomName(roomName: string) {
-    const match = roomName.match(/^slate:room:([^:]+):(file|note|canvas):([^:]+)$/);
-    if (!match) return null;
-    const documentTypeByRoomType: Record<string, DocumentType> = {
-      canvas: "canvas",
-      file: "code",
-      note: "note"
-    };
-
-    return {
-      documentId: match[3],
-      documentType: documentTypeByRoomType[match[2]],
-      workspaceId: match[1]
-    };
-  }
-
   private normalizeDocumentTitle(title: string) {
     const normalizedTitle = title.trim();
 
@@ -1354,21 +1508,35 @@ export class WorkspaceRepository {
     return normalizedTitle;
   }
 
+  private normalizeWorkspaceName(value: string) {
+    const name = value.trim().replace(/\s+/g, " ");
+    if (name.length < 2) {
+      throw new Error("Workspace name must be at least 2 characters");
+    }
+    return name.slice(0, 80);
+  }
+
   private slugify(value: string) {
     const slug = value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
     return slug || "slate";
   }
 
-  private async uniqueWorkspaceSlug(baseSlug: string) {
+  private async uniqueWorkspaceSlug(baseSlug: string, exceptWorkspaceId?: string) {
     let slug = baseSlug;
     let index = 2;
 
-    while (await prisma.workspace.findUnique({ where: { slug } })) {
+    while (true) {
+      const workspace = await prisma.workspace.findUnique({ where: { slug } });
+      if (!workspace || workspace.id === exceptWorkspaceId) return slug;
       slug = `${baseSlug}-${index}`;
       index += 1;
     }
+  }
 
-    return slug;
+  private workspaceAbbreviation(name: string) {
+    const words = name.match(/[\p{L}\p{N}]+/gu) ?? [];
+    const abbreviation = words.slice(0, 4).map((word) => word[0]?.toUpperCase() ?? "").join("");
+    return abbreviation || name.slice(0, 1).toUpperCase() || "S";
   }
 
   private async pruneAutomaticDocumentSnapshots(transaction: Prisma.TransactionClient, documentId: string) {
@@ -1450,6 +1618,13 @@ export class WorkspaceRepository {
       initials: member.user.initials,
       name: member.user.name,
       role: member.role
+    };
+  }
+
+  private toSettingsPayload(settings: WorkspaceSettingsPayload | null): WorkspaceSettingsPayload {
+    return {
+      ...this.defaultWorkspaceSettings,
+      ...settings
     };
   }
 }

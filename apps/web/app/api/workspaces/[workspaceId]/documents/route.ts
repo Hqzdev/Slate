@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { type DocumentType } from "@prisma/client";
+import { guardMutationRequest } from "@/lib/server/apiSecurity";
 import { authService } from "@/lib/server/auth";
 import { workspaceRepository } from "@/lib/server/workspaceRepository";
 
@@ -8,6 +9,9 @@ export const runtime = "nodejs";
 const documentTypes = new Set<DocumentType>(["canvas", "code", "note"]);
 
 export async function POST(request: NextRequest, context: { params: Promise<{ workspaceId: string }> }) {
+  const denied = await guardMutationRequest(request, { scope: "documents:create" });
+  if (denied) return denied;
+
   const user = await authService.getUserFromRequest(request);
   if (!user) {
     return NextResponse.json({ error: "Authentication required" }, { status: 401 });
@@ -30,6 +34,9 @@ export async function POST(request: NextRequest, context: { params: Promise<{ wo
 }
 
 export async function PATCH(request: NextRequest, context: { params: Promise<{ workspaceId: string }> }) {
+  const denied = await guardMutationRequest(request, { scope: "documents:reorder" });
+  if (denied) return denied;
+
   const user = await authService.getUserFromRequest(request);
   if (!user) {
     return NextResponse.json({ error: "Authentication required" }, { status: 401 });
