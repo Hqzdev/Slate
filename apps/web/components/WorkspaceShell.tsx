@@ -2,21 +2,33 @@
 
 import dynamic from "next/dynamic";
 import { type DragEvent, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { BrandMark } from "@/components/BrandMark";
-import { CanvasIcon, CodeIcon, CollapseIcon, CommandIcon, CopyIcon, FileIcon, FilePlusIcon, FolderIcon, FolderPlusIcon, NoteIcon, PanelHideIcon, PanelShowIcon, PlayIcon, RefreshIcon, RenameIcon, SettingsIcon, ShareIcon, TrashIcon, UsersIcon } from "@/components/Icons";
+import { ActivityIcon, AiIcon, CanvasIcon, CodeIcon, CollapseIcon, CommandIcon, CommentIcon, CopyIcon, DashboardIcon, FileIcon, FilePlusIcon, FolderIcon, FolderPlusIcon, NoteIcon, PlayIcon, PlusIcon, RefreshIcon, RenameIcon, SearchIcon, SettingsIcon, SortIcon, SupportIcon, TrashIcon, UsersIcon } from "@/components/Icons";
 import { DocumentHistoryPanel } from "@/components/DocumentHistoryPanel";
 import { SettingsModal } from "@/components/SettingsModal";
-import { DocumentSaveQueue, TerminalSaveError } from "@/lib/client/documentSaveQueue";
+import { WorkspaceAiPanel, type WorkspaceAiApplyResult } from "@/components/WorkspaceAiPanel";
+import { DocumentSaveQueue, RecoverableSaveError, TerminalSaveError } from "@/lib/client/documentSaveQueue";
 import { type RealtimeConnectionStatus, getRealtimeStatusDetail, getRealtimeStatusText, isRealtimeRecovering } from "@/lib/client/realtimeConnection";
+import { applyTheme, getResolvedTheme, getServerThemeSnapshot as getServerResolvedThemeSnapshot, setThemePreference, subscribeThemeChange } from "@/lib/client/theme";
 
-type PanelTab = "Output" | "Activity" | "Comments" | "AI";
+type PanelTab = "Output" | "Activity" | "Comments";
 type ExecutionEnvironmentId = "dry-run" | "node-container" | "node-syntax-check";
 type JobRunStatus = "completed" | "failed" | "pending" | "running";
 type RunState = "idle" | "running" | "done" | "failed";
-type SyncState = "offline" | "saved" | "saving";
+type SyncState = "blocked" | "offline" | "saved" | "saving";
 type WorkspaceTheme = "dark" | "light";
 type WorkspaceRole = "owner" | "editor" | "viewer";
 type WorkspaceTabType = "code" | "note" | "canvas";
+type WorkspaceView = "activity" | "ai" | "comments" | "dashboard" | "files";
+type ActivityFilter = "all" | "documents" | "runs" | "members" | "ai";
+type CommentFilter = "all" | "open" | "resolved";
+type EditorCommentSelection = {
+  endLine: number;
+  startLine: number;
+};
+type CanvasCommentSelection = {
+  id: string;
+  name: string;
+};
 type StarterDocument = {
   description: string;
   fileName: string;
@@ -29,12 +41,14 @@ type RealtimeConnectionSnapshot = {
 };
 type CommandPaletteItem = {
   disabled?: boolean;
+  disabledReason?: string;
   group: "Commands" | "Search";
   icon: WorkspaceTabType | "command" | "invite" | "run" | "theme";
   id: string;
   label: string;
   meta: string;
   run: () => void;
+  shortcut?: string;
 };
 
 type WorkspaceDocument = {
@@ -57,14 +71,30 @@ type WorkspaceMember = {
   role: WorkspaceRole;
 };
 
+type WorkspaceSettings = {
+  allowEditorFileDelete: boolean;
+  allowEditorInvites: boolean;
+  allowViewerComments: boolean;
+  autoSaveEnabled: boolean;
+  defaultInviteRole: WorkspaceRole;
+  description: string;
+  exportIncludesActivity: boolean;
+  fileTreeSortMode: string;
+  retentionDays: number;
+  showCollaboratorPresence: boolean;
+  showDocumentActivity: boolean;
+};
+
 type WorkspaceJobRun = {
   createdAt: string;
+  documentId: string | null;
   documentTitle: string | null;
   error: string | null;
   id: string;
   kind: string;
   output: string;
   status: JobRunStatus;
+  updatedAt: string;
 };
 
 type ActivityEvent = {
@@ -83,6 +113,8 @@ type DocumentComment = {
   documentId: string;
   fileNodeId: string | null;
   id: string;
+  lineEnd: number | null;
+  lineStart: number | null;
   resolvedAt: string | null;
   shapeId: string | null;
   updatedAt: string;
@@ -97,6 +129,14 @@ type WorkspaceFileNode = {
   position: number;
 };
 
+type WorkspacePresenceUser = {
+  color: string;
+  id: string;
+  initials: string;
+  name: string;
+  role: string;
+};
+
 type FileCreationDraft = {
   kind: "document" | "folder";
   name: string;
@@ -109,17 +149,13 @@ type FileContextMenu = {
   y: number;
 };
 
-type AccountContextMenu = {
-  x: number;
-  y: number;
-};
-
 type FileDropTarget = {
   fileNodeId: string;
   mode: "after" | "before" | "inside";
 };
 
 type WorkspaceSummary = {
+  abbreviation: string;
   documentCount: number;
   id: string;
   members: WorkspaceMember[];
@@ -136,6 +172,7 @@ type WorkspacePayload = {
     name: string;
   };
   activeWorkspace: {
+    abbreviation: string;
     documents: WorkspaceDocument[];
     fileNodes: WorkspaceFileNode[];
     id: string;
@@ -150,6 +187,7 @@ type WorkspacePayload = {
     }[];
     members: WorkspaceMember[];
     name: string;
+    settings: WorkspaceSettings;
     slug: string;
   } | null;
   workspaces: WorkspaceSummary[];
@@ -169,7 +207,10 @@ const CollaborativeNote = dynamic(() => import("@/components/CollaborativeNote")
 
 const awarenessColors: Record<string, string> = {
   blue: "#3b82f6",
+  green: "#22c55e",
   gray: "#64748b",
+  orange: "#f97316",
+  pink: "#ec4899",
   teal: "#14b8a6",
   violet: "#8b5cf6"
 };
@@ -219,12 +260,23 @@ function getServerWorkspaceIdSnapshot() {
   return null;
 }
 
+function getWorkspaceViewSnapshot(): WorkspaceView {
+  if (/^\/workspace\/ai\/sltx-[a-f0-9]{4}-[a-f0-9]{4}$/.test(window.location.pathname)) return "ai";
+  const view = new URLSearchParams(window.location.search).get("view");
+  if (view === "activity" || view === "ai" || view === "comments" || view === "files") return view;
+  return "dashboard";
+}
+
+function getServerWorkspaceViewSnapshot(): WorkspaceView {
+  return "dashboard";
+}
+
 function getThemeSnapshot(): WorkspaceTheme {
-  return window.localStorage.getItem("slate-workspace-theme") === "light" ? "light" : "dark";
+  return getResolvedTheme();
 }
 
 function getServerThemeSnapshot(): WorkspaceTheme {
-  return "dark";
+  return getServerResolvedThemeSnapshot();
 }
 
 function getCanvasSearchText(canvasState: unknown) {
@@ -251,6 +303,36 @@ function fileNameToDocumentType(fileName: string): WorkspaceTabType {
   return "code";
 }
 
+function formatRelativeTime(isoDate: string) {
+  const timestamp = Date.parse(isoDate);
+  if (Number.isNaN(timestamp)) return "";
+  const elapsedMinutes = Math.floor((Date.now() - timestamp) / 60_000);
+  if (elapsedMinutes < 1) return "just now";
+  if (elapsedMinutes < 60) return `${elapsedMinutes} min ago`;
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) return `${elapsedHours} h ago`;
+  const elapsedDays = Math.floor(elapsedHours / 24);
+  if (elapsedDays < 7) return `${elapsedDays} d ago`;
+  return new Date(timestamp).toLocaleDateString();
+}
+
+function getCanvasCommentShapeName(canvasState: unknown, shapeId: string) {
+  if (!canvasState || typeof canvasState !== "object") return null;
+  const shapes = (canvasState as { shapes?: unknown }).shapes;
+  if (!Array.isArray(shapes)) return null;
+  const shape = shapes.find((item) => item && typeof item === "object" && (item as { id?: unknown }).id === shapeId);
+  if (!shape || typeof shape !== "object") return null;
+  const name = (shape as { name?: unknown }).name;
+  if (typeof name === "string" && name.trim()) return name.trim();
+  const type = (shape as { type?: unknown }).type;
+  return typeof type === "string" && type ? `${type.slice(0, 1).toUpperCase()}${type.slice(1)}` : null;
+}
+
+function formatCommentLineRange(lineStart: number | null, lineEnd: number | null) {
+  if (lineStart === null || lineEnd === null) return null;
+  return lineStart === lineEnd ? `line ${lineStart}` : `lines ${lineStart}–${lineEnd}`;
+}
+
 async function readActionError(response: Response, fallback: string) {
   const body = await response.json().catch(() => null) as { error?: unknown } | null;
   return typeof body?.error === "string" ? body.error : fallback;
@@ -258,7 +340,8 @@ async function readActionError(response: Response, fallback: string) {
 
 export function WorkspaceShell() {
   const queryWorkspaceId = useSyncExternalStore(subscribeWorkspaceClientState, getWorkspaceIdSnapshot, getServerWorkspaceIdSnapshot);
-  const storedTheme = useSyncExternalStore(subscribeWorkspaceClientState, getThemeSnapshot, getServerThemeSnapshot);
+  const queryWorkspaceView = useSyncExternalStore(subscribeWorkspaceClientState, getWorkspaceViewSnapshot, getServerWorkspaceViewSnapshot);
+  const storedTheme = useSyncExternalStore(subscribeThemeChange, getThemeSnapshot, getServerThemeSnapshot);
   const [payload, setPayload] = useState<WorkspacePayload | null>(null);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
@@ -268,38 +351,39 @@ export function WorkspaceShell() {
   const [outputLines, setOutputLines] = useState<string[]>([]);
   const [activityEvents, setActivityEvents] = useState<ActivityEvent[]>([]);
   const [activityError, setActivityError] = useState<string | null>(null);
+  const [activityFilter, setActivityFilter] = useState<ActivityFilter>("all");
+  const [activitySearch, setActivitySearch] = useState("");
   const [comments, setComments] = useState<DocumentComment[]>([]);
+  const [workspaceComments, setWorkspaceComments] = useState<DocumentComment[]>([]);
+  const [commentFilter, setCommentFilter] = useState<CommentFilter>("all");
   const [commentDraft, setCommentDraft] = useState("");
+  const [commentLineSelection, setCommentLineSelection] = useState<EditorCommentSelection | null>(null);
+  const [commentShapeSelection, setCommentShapeSelection] = useState<CanvasCommentSelection | null>(null);
   const [commentError, setCommentError] = useState<string | null>(null);
   const [commentPending, setCommentPending] = useState(false);
   const [commentActionPendingId, setCommentActionPendingId] = useState<string | null>(null);
   const [selectedExecutionEnvironmentId, setSelectedExecutionEnvironmentId] = useState<ExecutionEnvironmentId>("dry-run");
+  const [executionEnvironmentOpen, setExecutionEnvironmentOpen] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
-  const [shareOpen, setShareOpen] = useState(false);
-  const [usersOpen, setUsersOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [creationMenuOpen, setCreationMenuOpen] = useState(false);
-  const [creationMenuPosition, setCreationMenuPosition] = useState({ left: 0, top: 0 });
-  const [inviteEmail, setInviteEmail] = useState("");
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
-  const [inviteRole, setInviteRole] = useState<"editor" | "viewer">("editor");
   const [inviteActionPendingId, setInviteActionPendingId] = useState<string | null>(null);
   const [inviteSubmitting, setInviteSubmitting] = useState(false);
-  const [gitImportUrl, setGitImportUrl] = useState("");
-  const [gitImportError, setGitImportError] = useState<string | null>(null);
-  const [gitImportSummary, setGitImportSummary] = useState<string | null>(null);
-  const [gitImportPending, setGitImportPending] = useState(false);
   const [memberActionError, setMemberActionError] = useState<string | null>(null);
   const [memberActionPendingId, setMemberActionPendingId] = useState<string | null>(null);
+  const [memberRoleMenuOpenId, setMemberRoleMenuOpenId] = useState<string | null>(null);
+  const [membersManageOpen, setMembersManageOpen] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [selectedFileNodeId, setSelectedFileNodeId] = useState<string | null>(null);
   const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(new Set());
   const [fileCreationDraft, setFileCreationDraft] = useState<FileCreationDraft | null>(null);
   const [fileTreeError, setFileTreeError] = useState<string | null>(null);
   const [fileTreePending, setFileTreePending] = useState(false);
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenu | null>(null);
-  const [accountContextMenu, setAccountContextMenu] = useState<AccountContextMenu | null>(null);
   const [pendingDeleteFileNode, setPendingDeleteFileNode] = useState<WorkspaceFileNode | null>(null);
   const [draggedFileNodeId, setDraggedFileNodeId] = useState<string | null>(null);
   const [dropTargetFileNode, setDropTargetFileNode] = useState<FileDropTarget | null>(null);
@@ -307,11 +391,17 @@ export function WorkspaceShell() {
   const [fileNodeRenameDraft, setFileNodeRenameDraft] = useState("");
   const [workspaceCreating, setWorkspaceCreating] = useState(false);
   const [workspaceCreateError, setWorkspaceCreateError] = useState<string | null>(null);
+  const [workspaceCreateOpen, setWorkspaceCreateOpen] = useState(false);
+  const [workspaceNameDraft, setWorkspaceNameDraft] = useState("northbridge-prod");
   const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>(queryWorkspaceView);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [commandPaletteQuery, setCommandPaletteQuery] = useState("");
   const [commandPaletteSelectedIndex, setCommandPaletteSelectedIndex] = useState(0);
+  const [documentPresenceById, setDocumentPresenceById] = useState<Record<string, WorkspacePresenceUser[]>>({});
+  const [documentValidationErrors, setDocumentValidationErrors] = useState<Record<string, string>>({});
   const [sidePanelCollapsed, setSidePanelCollapsed] = useState(false);
+  const [settingsFocusAccount, setSettingsFocusAccount] = useState(false);
   const [confirmDeleteFiles, setConfirmDeleteFiles] = useState(true);
   const [syncState, setSyncState] = useState<SyncState>("saved");
   const [realtimeConnection, setRealtimeConnection] = useState<RealtimeConnectionSnapshot>({ documentId: null, status: "idle" });
@@ -319,11 +409,47 @@ export function WorkspaceShell() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const createDocumentButtonRef = useRef<HTMLButtonElement | null>(null);
+  const canvasLocalBlockedIdsRef = useRef<Set<string>>(new Set());
+  const documentFlushesRef = useRef<Map<string, () => void>>(new Map());
   const documentSaveQueueRef = useRef<DocumentSaveQueue | null>(null);
+  const documentSyncStatesRef = useRef<Map<string, SyncState>>(new Map());
+  const executionEnvironmentRef = useRef<HTMLDivElement | null>(null);
+  const workspaceSyncStateRef = useRef<Exclude<SyncState, "blocked">>("saved");
   const recoveredWorkspaceIdRef = useRef<string | null>(null);
+  const requestedWorkspaceIdRef = useRef<string | null>(null);
+  const shortcutHandlerRef = useRef<(event: KeyboardEvent) => void>(() => {});
+  const workspaceSwitcherRef = useRef<HTMLDivElement | null>(null);
+  const workspaceLoadControllerRef = useRef<AbortController | null>(null);
+  const workspaceLoadSequenceRef = useRef(0);
+  const refreshSyncState = useCallback((workspaceState?: Exclude<SyncState, "blocked">) => {
+    if (workspaceState) workspaceSyncStateRef.current = workspaceState;
+    const documentStates = Array.from(documentSyncStatesRef.current.values());
+    const nextState = canvasLocalBlockedIdsRef.current.size > 0 || documentStates.includes("blocked")
+      ? "blocked"
+      : workspaceSyncStateRef.current === "offline" || documentStates.includes("offline")
+        ? "offline"
+        : workspaceSyncStateRef.current === "saving" || documentStates.includes("saving")
+          ? "saving"
+          : "saved";
+    setSyncState(nextState);
+  }, []);
+  const handleCanvasLocalSaveBlockedChange = useCallback((documentId: string, blocked: boolean) => {
+    if (blocked) {
+      canvasLocalBlockedIdsRef.current.add(documentId);
+    } else {
+      canvasLocalBlockedIdsRef.current.delete(documentId);
+    }
+    refreshSyncState();
+  }, [refreshSyncState]);
   if (documentSaveQueueRef.current == null) {
     documentSaveQueueRef.current = new DocumentSaveQueue({
       onSaved: (documentId, document) => {
+        setDocumentValidationErrors((current) => {
+          if (!(documentId in current)) return current;
+          const next = { ...current };
+          delete next[documentId];
+          return next;
+        });
         setPayload((current) => {
           if (!current?.activeWorkspace) return current;
           return {
@@ -337,10 +463,28 @@ export function WorkspaceShell() {
           };
         });
       },
-      onStatusChange: (_documentId, status) => setSyncState(status),
+      onStatusChange: (documentId, status) => {
+        if (status === "saved") {
+          documentSyncStatesRef.current.delete(documentId);
+        } else {
+          documentSyncStatesRef.current.set(documentId, status);
+        }
+        refreshSyncState();
+      },
       onTerminalError: (_documentId, message) => {
         setError(message);
-        setSyncState("offline");
+        refreshSyncState();
+      },
+      onValidationError: (documentId, message) => {
+        setDocumentValidationErrors((current) => {
+          if (!message) {
+            if (!(documentId in current)) return current;
+            const next = { ...current };
+            delete next[documentId];
+            return next;
+          }
+          return { ...current, [documentId]: message };
+        });
       },
       send: async (documentId, input) => {
         const requestBody = JSON.stringify(input);
@@ -352,7 +496,8 @@ export function WorkspaceShell() {
         });
 
         if (!response.ok) {
-          const message = await response.text();
+          const message = await readActionError(response, "Document update failed");
+          if (response.status === 413) throw new RecoverableSaveError(message);
           if (response.status === 401 || response.status === 403) throw new TerminalSaveError(message);
           throw new Error(message);
         }
@@ -373,14 +518,26 @@ export function WorkspaceShell() {
     return documents.filter((document) => openIds.has(document.id));
   }, [documents, openTabIds]);
   const activeTab = useMemo(() => openedDocuments.find((document) => document.id === activeTabId) ?? null, [activeTabId, openedDocuments]);
+
+  useEffect(() => {
+    applyTheme(theme);
+  }, [theme]);
+
   const currentWorkspaceId = activeWorkspace?.id ?? null;
   const currentDocumentId = activeTab?.id ?? null;
   const jobRuns = useMemo(() => activeWorkspace?.jobRuns ?? [], [activeWorkspace?.jobRuns]);
-  const selectedRun = useMemo(() => jobRuns.find((run) => run.id === selectedRunId) ?? jobRuns[0] ?? null, [jobRuns, selectedRunId]);
+  const activeDocumentRuns = useMemo(() => currentDocumentId ? jobRuns.filter((run) => run.documentId === currentDocumentId) : [], [currentDocumentId, jobRuns]);
+  const selectedRun = useMemo(() => activeDocumentRuns.find((run) => run.id === selectedRunId) ?? activeDocumentRuns[0] ?? null, [activeDocumentRuns, selectedRunId]);
+  const hasActiveRun = Boolean(selectedRun && (selectedRun.status === "pending" || selectedRun.status === "running"));
+  const selectedExecutionEnvironment = executionEnvironments.find((environment) => environment.id === selectedExecutionEnvironmentId) ?? executionEnvironments[0];
   const activeFileNode = useMemo(() => activeTab ? fileNodes.find((fileNode) => fileNode.documentId === activeTab.id) ?? null : null, [activeTab, fileNodes]);
   const selectedFileNode = useMemo(() => fileNodes.find((fileNode) => fileNode.id === selectedFileNodeId) ?? activeFileNode, [activeFileNode, fileNodes, selectedFileNodeId]);
   const selectedParentId = selectedFileNode?.kind === "folder" ? selectedFileNode.id : selectedFileNode?.parentId ?? null;
   const activePathParts = useMemo(() => {
+    if (workspaceView === "dashboard") return [activeWorkspace?.name ?? "Workspace", "Dashboard"];
+    if (workspaceView === "activity") return [activeWorkspace?.name ?? "Workspace", "Activity"];
+    if (workspaceView === "ai") return [activeWorkspace?.name ?? "Workspace", "AI Assistant"];
+    if (workspaceView === "comments") return [activeWorkspace?.name ?? "Workspace", "Comments"];
     if (!activeTab) return [activeWorkspace?.name ?? "Workspace"];
     if (!activeFileNode) return [activeTab.title];
 
@@ -395,7 +552,7 @@ export function WorkspaceShell() {
     }
 
     return parts;
-  }, [activeFileNode, activeTab, activeWorkspace?.name, fileNodes]);
+  }, [activeFileNode, activeTab, activeWorkspace?.name, fileNodes, workspaceView]);
   const fileNodesByParentId = useMemo(() => {
     const nextNodes = new Map<string, WorkspaceFileNode[]>();
     for (const fileNode of fileNodes) {
@@ -403,8 +560,10 @@ export function WorkspaceShell() {
       nextNodes.set(parentKey, [...nextNodes.get(parentKey) ?? [], fileNode]);
     }
 
+    const compareByPosition = (left: WorkspaceFileNode, right: WorkspaceFileNode) => left.position - right.position || left.name.localeCompare(right.name);
+
     for (const [parentKey, childNodes] of nextNodes.entries()) {
-      nextNodes.set(parentKey, childNodes.sort((left, right) => left.position - right.position || left.name.localeCompare(right.name)));
+      nextNodes.set(parentKey, childNodes.sort(compareByPosition));
     }
 
     return nextNodes;
@@ -414,11 +573,50 @@ export function WorkspaceShell() {
   const canInvite = activeMember?.role === "owner";
   const canEdit = activeMember?.role === "owner" || activeMember?.role === "editor";
   const canManageMembers = activeMember?.role === "owner";
-  const shouldAllowPanel = Boolean(activeTab);
+  const activeDocumentComments = useMemo(() => activeTab ? comments.filter((comment) => comment.documentId === activeTab.id) : [], [activeTab, comments]);
+  const filteredComments = useMemo(() => activeDocumentComments.filter((comment) => {
+    if (commentFilter === "open") return comment.resolvedAt === null;
+    if (commentFilter === "resolved") return comment.resolvedAt !== null;
+    return true;
+  }), [activeDocumentComments, commentFilter]);
+  const commentComposerContext = useMemo(() => {
+    if (!activeTab) return "Document";
+    const parts = [activeFileNode?.name ?? activeTab.title];
+    if (activeTab.type === "code") {
+      const lineRange = formatCommentLineRange(commentLineSelection?.startLine ?? null, commentLineSelection?.endLine ?? null);
+      if (lineRange) parts.push(lineRange);
+    }
+    if (activeTab.type === "canvas" && commentShapeSelection) parts.push(commentShapeSelection.name);
+    return parts.join(" · ");
+  }, [activeFileNode?.name, activeTab, commentLineSelection, commentShapeSelection]);
+
+  const handleEditorCommentSelectionChange = useCallback((selection: EditorCommentSelection | null) => {
+    setCommentLineSelection(selection);
+    setCommentShapeSelection(null);
+  }, []);
+
+  const handleCanvasCommentSelectionChange = useCallback((selection: CanvasCommentSelection | null) => {
+    setCommentShapeSelection(selection);
+    setCommentLineSelection(null);
+  }, []);
+
+  function getCommentContextLabel(comment: DocumentComment) {
+    const commentDocument = documents.find((document) => document.id === comment.documentId) ?? null;
+    const commentFileNode = comment.fileNodeId
+      ? fileNodes.find((fileNode) => fileNode.id === comment.fileNodeId) ?? null
+      : fileNodes.find((fileNode) => fileNode.documentId === comment.documentId) ?? null;
+    const parts = [comment.fileNodeId && !commentFileNode ? "Deleted file" : commentFileNode?.name ?? commentDocument?.title ?? "Deleted document"];
+    const lineRange = formatCommentLineRange(comment.lineStart, comment.lineEnd);
+    if (lineRange) parts.push(lineRange);
+    if (comment.shapeId) parts.push(getCanvasCommentShapeName(commentDocument?.canvasState, comment.shapeId) ?? "Deleted object");
+    return parts.join(" · ");
+  }
+  const activeWorkspaceIsSettled = Boolean(activeWorkspace && (!activeWorkspaceId || activeWorkspace.id === activeWorkspaceId));
+  const shouldAllowPanel = Boolean(activeWorkspaceIsSettled && activeTab && workspaceView === "files");
   const shouldShowPanel = Boolean(!sidePanelCollapsed && shouldAllowPanel);
-  const shouldUseCanvasWorkbench = activeTab?.type === "canvas";
-  const statusText = syncState === "saving" ? "Saving" : syncState === "offline" ? "Offline" : "Saved";
-  const statusDetail = syncState === "saving" ? "Writing to Postgres" : syncState === "offline" ? "Reconnect required" : "All changes persisted";
+  const shouldUseCanvasWorkbench = workspaceView === "files" && activeTab?.type === "canvas";
+  const statusText = syncState === "blocked" ? "Save blocked" : syncState === "saving" ? "Saving" : syncState === "offline" ? "Offline" : "Saved";
+  const statusDetail = syncState === "blocked" ? "Resolve the document save error" : syncState === "saving" ? "Writing to Postgres" : syncState === "offline" ? "Reconnect required" : "All changes persisted";
   const realtimeState: RealtimeConnectionStatus = realtimeConnection.documentId === currentDocumentId ? realtimeConnection.status : currentDocumentId ? "connecting" : "idle";
   const realtimeStatusText = getRealtimeStatusText(realtimeState);
   const realtimeStatusDetail = getRealtimeStatusDetail(realtimeState);
@@ -426,33 +624,66 @@ export function WorkspaceShell() {
     setRealtimeConnection({ documentId: currentDocumentId, status });
   }, [currentDocumentId]);
 
+  const registerDocumentFlush = useCallback((documentId: string, flush: () => void) => {
+    documentFlushesRef.current.set(documentId, flush);
+    return () => {
+      if (documentFlushesRef.current.get(documentId) === flush) {
+        documentFlushesRef.current.delete(documentId);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    requestedWorkspaceIdRef.current = requestedWorkspaceId ?? currentWorkspaceId;
+  }, [currentWorkspaceId, requestedWorkspaceId]);
+
+  const cancelWorkspaceLoad = useCallback(() => {
+    workspaceLoadSequenceRef.current += 1;
+    workspaceLoadControllerRef.current?.abort();
+    workspaceLoadControllerRef.current = null;
+    setLoading(false);
+  }, []);
+
   const loadWorkspace = useCallback(async (workspaceId: string | null) => {
+    const sequence = workspaceLoadSequenceRef.current + 1;
+    workspaceLoadSequenceRef.current = sequence;
+    workspaceLoadControllerRef.current?.abort();
+    const controller = new AbortController();
+    workspaceLoadControllerRef.current = controller;
     setLoading(true);
     setError(null);
 
     try {
-      const query = workspaceId ? `?workspaceId=${workspaceId}` : "";
-      const response = await fetch(`/api/workspaces${query}`, { cache: "no-store" });
+      const query = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : "";
+      const response = await fetch(`/api/workspaces${query}`, { cache: "no-store", signal: controller.signal });
+      if (controller.signal.aborted || workspaceLoadSequenceRef.current !== sequence) return null;
 
       if (response.status === 401) {
         window.location.href = `/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`;
-        return;
+        return null;
       }
 
       if (!response.ok) {
-        throw new Error(await response.text());
+        throw new Error(await readActionError(response, "Workspace failed to load"));
       }
 
       const nextPayload = (await response.json()) as WorkspacePayload;
+      if (controller.signal.aborted || workspaceLoadSequenceRef.current !== sequence) return null;
       setPayload(nextPayload);
-      setSyncState("saved");
+      refreshSyncState("saved");
+      return nextPayload;
     } catch (loadError) {
+      if (controller.signal.aborted || workspaceLoadSequenceRef.current !== sequence) return null;
       setError(loadError instanceof Error ? loadError.message : "Workspace failed to load");
-      setSyncState("offline");
+      refreshSyncState("offline");
+      return null;
     } finally {
-      setLoading(false);
+      if (workspaceLoadSequenceRef.current === sequence) {
+        workspaceLoadControllerRef.current = null;
+        setLoading(false);
+      }
     }
-  }, []);
+  }, [refreshSyncState]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -462,9 +693,15 @@ export function WorkspaceShell() {
     return () => window.clearTimeout(timer);
   }, [loadWorkspace, requestedWorkspaceId]);
 
+  useEffect(() => () => {
+    workspaceLoadSequenceRef.current += 1;
+    workspaceLoadControllerRef.current?.abort();
+    workspaceLoadControllerRef.current = null;
+  }, []);
+
   useEffect(() => {
     if (selectedTheme) {
-      window.localStorage.setItem("slate-workspace-theme", selectedTheme);
+      setThemePreference(selectedTheme);
     }
   }, [selectedTheme]);
 
@@ -476,6 +713,7 @@ export function WorkspaceShell() {
 
   useEffect(() => {
     function flushPendingSaves() {
+      for (const flush of documentFlushesRef.current.values()) flush();
       documentSaveQueueRef.current?.flush();
     }
 
@@ -484,34 +722,162 @@ export function WorkspaceShell() {
   }, []);
 
   useEffect(() => {
-    function handleShortcut(event: KeyboardEvent) {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        if (commandPaletteOpen) {
-          setCommandPaletteOpen(false);
-        } else {
-          openCommandPalette();
-        }
-      }
+    shortcutHandlerRef.current = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      const hasCmd = event.metaKey || event.ctrlKey;
 
       if (event.key === "Escape") {
         setCommandPaletteOpen(false);
-        setShareOpen(false);
-        setUsersOpen(false);
         setSettingsOpen(false);
         setWorkspaceSwitcherOpen(false);
+        setWorkspaceCreateOpen(false);
         setCreationMenuOpen(false);
+        setExecutionEnvironmentOpen(false);
         setFileCreationDraft(null);
         setFileContextMenu(null);
-        setAccountContextMenu(null);
+        setMemberRoleMenuOpenId(null);
         setPendingDeleteFileNode(null);
         setRenamingFileNodeId(null);
+        return;
       }
-    }
 
+      if (!hasCmd) return;
+
+      if (!event.shiftKey && !event.altKey) {
+        if (key === "k") {
+          event.preventDefault();
+          if (commandPaletteOpen) {
+            setCommandPaletteOpen(false);
+          } else {
+            openCommandPalette();
+          }
+          return;
+        }
+
+        if (key === "enter") {
+          if (!activeTab || !canEdit || activeTab.type !== "code" || hasActiveRun || runState === "running") return;
+          event.preventDefault();
+          void runActiveDocument();
+          return;
+        }
+
+        if (key === "s") {
+          event.preventDefault();
+          documentSaveQueueRef.current?.flush();
+          return;
+        }
+
+        if (key === ",") {
+          event.preventDefault();
+          setSettingsOpen(true);
+          return;
+        }
+
+        return;
+      }
+
+      if (event.altKey && !event.shiftKey) {
+        if (event.code === "KeyN" || event.code === "KeyC" || event.code === "KeyV") {
+          event.preventDefault();
+          if (!canEdit) return;
+          const fileName = event.code === "KeyN" ? "new-note.md" : event.code === "KeyC" ? "new-file.ts" : "new-canvas.canvas";
+          beginFileCreation("document", undefined, fileName);
+          return;
+        }
+
+        if (event.code === "KeyW") {
+          event.preventDefault();
+          if (activeTabId) closeDocumentTab(activeTabId);
+          return;
+        }
+
+        if (event.code === "BracketRight" || event.code === "BracketLeft") {
+          event.preventDefault();
+          if (!activeTabId || openTabIds.length < 2) return;
+          const currentIndex = openTabIds.indexOf(activeTabId);
+          const step = event.code === "BracketRight" ? 1 : -1;
+          const nextTabId = openTabIds[(currentIndex + step + openTabIds.length) % openTabIds.length];
+          if (nextTabId) selectDocument(nextTabId);
+          return;
+        }
+
+        const digitMatch = /^Digit([1-9])$/.exec(event.code);
+        if (digitMatch) {
+          event.preventDefault();
+          const tabId = openTabIds[Number(digitMatch[1]) - 1];
+          if (tabId) selectDocument(tabId);
+          return;
+        }
+
+        return;
+      }
+
+      if (event.shiftKey && !event.altKey) {
+        if (key === "d") {
+          event.preventDefault();
+          setWorkspaceView("dashboard");
+          return;
+        }
+
+        if (key === "e") {
+          event.preventDefault();
+          setWorkspaceView("activity");
+          return;
+        }
+
+        if (key === "m") {
+          event.preventDefault();
+          setWorkspaceView("comments");
+          return;
+        }
+
+        if (key === "l") {
+          event.preventDefault();
+          toggleTheme();
+        }
+      }
+    };
+  });
+
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => shortcutHandlerRef.current(event);
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, [commandPaletteOpen]);
+  }, []);
+
+  useEffect(() => {
+    if (!workspaceSwitcherOpen) return;
+
+    function closeWorkspaceSwitcherFromPointer(event: PointerEvent) {
+      if (workspaceSwitcherRef.current?.contains(event.target as Node)) return;
+      setWorkspaceSwitcherOpen(false);
+    }
+
+    window.addEventListener("pointerdown", closeWorkspaceSwitcherFromPointer);
+    return () => window.removeEventListener("pointerdown", closeWorkspaceSwitcherFromPointer);
+  }, [workspaceSwitcherOpen]);
+
+  useEffect(() => {
+    if (!executionEnvironmentOpen) return;
+
+    function closeFromPointer(event: PointerEvent) {
+      if (executionEnvironmentRef.current?.contains(event.target as Node)) return;
+      setExecutionEnvironmentOpen(false);
+    }
+
+    window.addEventListener("pointerdown", closeFromPointer);
+    return () => window.removeEventListener("pointerdown", closeFromPointer);
+  }, [executionEnvironmentOpen]);
+
+  useEffect(() => {
+    if (!currentWorkspaceId || !hasActiveRun) return;
+
+    const timer = window.setInterval(() => {
+      void refreshRunHistory(currentWorkspaceId);
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [currentWorkspaceId, hasActiveRun]);
 
   function openCommandPalette() {
     setCommandPaletteQuery("");
@@ -520,21 +886,49 @@ export function WorkspaceShell() {
   }
 
   function selectWorkspace(workspaceId: string) {
+    requestedWorkspaceIdRef.current = workspaceId;
     setActiveWorkspaceId(workspaceId);
     setActiveTabId(null);
     setOpenTabIds([]);
     setSelectedFileNodeId(null);
     setOutputLines([]);
     setRunState("idle");
+    setSelectedRunId(null);
+    setSidePanelCollapsed(true);
   }
 
   function selectDocument(tabId: string) {
     const fileNode = fileNodes.find((node) => node.documentId === tabId) ?? null;
+    setWorkspaceView("files");
     setOpenTabIds((current) => current.includes(tabId) ? current : [...current, tabId]);
     setActiveTabId(tabId);
     setSelectedFileNodeId(fileNode?.id ?? null);
     setOutputLines([]);
     setRunState("idle");
+    setSelectedRunId(null);
+  }
+
+  function openDocumentHistory(documentId: string) {
+    selectDocument(documentId);
+    window.setTimeout(() => document.querySelector<HTMLButtonElement>(".history-control")?.click(), 0);
+  }
+
+  function openDashboardFolder(fileNodeId: string) {
+    setWorkspaceView("files");
+    if (fileNodeId === "root") {
+      setSelectedFileNodeId(null);
+      return;
+    }
+    setSelectedFileNodeId(fileNodeId);
+    setExpandedFolderIds((current) => new Set(current).add(fileNodeId));
+  }
+
+  function openDashboardRun(run: WorkspaceJobRun) {
+    if (run.documentId) selectDocument(run.documentId);
+    setSelectedRunId(run.id);
+    setActivePanel("Output");
+    setSidePanelCollapsed(false);
+    setRunState(run.status === "failed" ? "failed" : run.status === "completed" ? "done" : "running");
   }
 
   function closeDocumentTab(tabId: string) {
@@ -550,16 +944,10 @@ export function WorkspaceShell() {
     setSelectedFileNodeId(nextFileNode?.id ?? null);
     setOutputLines([]);
     setRunState("idle");
+    setSelectedRunId(null);
   }
 
   function toggleCreationMenu() {
-    const rect = createDocumentButtonRef.current?.getBoundingClientRect();
-    if (!rect) {
-      setCreationMenuOpen(false);
-      return;
-    }
-
-    setCreationMenuPosition({ left: rect.left, top: rect.bottom + 4 });
     setCreationMenuOpen((open) => !open);
   }
 
@@ -585,7 +973,24 @@ export function WorkspaceShell() {
     }
   }
 
-  const ignoreDocumentPresence = useCallback(() => undefined, []);
+  const updateDocumentPresence = useCallback((documentId: string, users: WorkspacePresenceUser[]) => {
+    setDocumentPresenceById((current) => {
+      const visibleUsers = Array.from(new Map(users.filter((user) => user.id !== payload?.activeUser.id).map((user) => [user.id, user])).values());
+      if (visibleUsers.length === 0) {
+        if (!current[documentId]) return current;
+        const nextPresence = { ...current };
+        delete nextPresence[documentId];
+        return nextPresence;
+      }
+
+      return {
+        ...current,
+        [documentId]: visibleUsers
+      };
+    });
+  }, [payload?.activeUser.id]);
+
+  const workspaceNameIsValid = /^[a-z0-9-]+$/.test(workspaceNameDraft.trim());
 
   async function createWorkspace() {
     if (workspaceCreating) return;
@@ -594,7 +999,11 @@ export function WorkspaceShell() {
     setWorkspaceCreateError(null);
 
     try {
-      const response = await fetch("/api/workspaces", { method: "POST" });
+      const response = await fetch("/api/workspaces", {
+        body: JSON.stringify({ name: workspaceNameDraft.trim() }),
+        headers: { "content-type": "application/json" },
+        method: "POST"
+      });
 
       if (response.status === 401) {
         window.location.href = `/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`;
@@ -608,17 +1017,18 @@ export function WorkspaceShell() {
 
       const nextPayload = (await response.json()) as WorkspacePayload;
       const nextWorkspace = nextPayload.activeWorkspace;
+      requestedWorkspaceIdRef.current = nextWorkspace?.id ?? null;
       setPayload(nextPayload);
       setActiveWorkspaceId(nextWorkspace?.id ?? null);
       setActiveTabId(null);
       setOpenTabIds([]);
       setSelectedFileNodeId(null);
-      setSyncState("saved");
+      refreshSyncState("saved");
       setCreationMenuOpen(false);
-      setShareOpen(false);
+      setWorkspaceCreateOpen(false);
     } catch (workspaceCreateError) {
       setWorkspaceCreateError(workspaceCreateError instanceof Error ? workspaceCreateError.message : "Workspace creation failed");
-      setSyncState("offline");
+      refreshSyncState("offline");
     } finally {
       setWorkspaceCreating(false);
     }
@@ -628,6 +1038,7 @@ export function WorkspaceShell() {
     if (!activeWorkspace || !canEdit || fileTreePending) return;
 
     const parentId = parentIdOverride === undefined ? selectedParentId : parentIdOverride;
+    setWorkspaceView("files");
     setFileCreationDraft({
       kind,
       name: initialName ?? (kind === "folder" ? "new-folder" : "new-file.ts"),
@@ -929,13 +1340,14 @@ export function WorkspaceShell() {
   }
 
   function saveDocument(documentId: string, input: { canvasState?: unknown; content?: string; title?: string }) {
-    if (!canEdit) return;
-    documentSaveQueueRef.current?.enqueue(documentId, input);
+    if (!canEdit || !documentSaveQueueRef.current) return false;
+    documentSaveQueueRef.current.enqueue(documentId, input);
+    return true;
   }
 
   async function refreshRunHistory(workspaceId: string) {
     const response = await fetch(`/api/jobs/runs?workspaceId=${encodeURIComponent(workspaceId)}`, { cache: "no-store" });
-    if (!response.ok) return [];
+    if (!response.ok) throw new Error(await readActionError(response, "Run history failed"));
     const body = (await response.json()) as { runs: WorkspaceJobRun[] };
     setPayload((current) => {
       if (!current?.activeWorkspace || current.activeWorkspace.id !== workspaceId) return current;
@@ -951,14 +1363,110 @@ export function WorkspaceShell() {
   }
 
   const refreshActivity = useCallback(async (workspaceId: string) => {
-    const response = await fetch(`/api/workspaces/${workspaceId}/activity`, { cache: "no-store" });
-    if (!response.ok) {
-      setActivityError(await readActionError(response, "Activity failed to load"));
-      return;
+    if (requestedWorkspaceIdRef.current && requestedWorkspaceIdRef.current !== workspaceId) return;
+    try {
+      const response = await fetch(`/api/workspaces/${workspaceId}/activity`, { cache: "no-store" });
+      if (requestedWorkspaceIdRef.current && requestedWorkspaceIdRef.current !== workspaceId) return;
+      if (!response.ok) {
+        setActivityError(await readActionError(response, "Activity failed to load"));
+        return;
+      }
+      const body = (await response.json()) as { events: ActivityEvent[] };
+      if (requestedWorkspaceIdRef.current && requestedWorkspaceIdRef.current !== workspaceId) return;
+      setActivityEvents(body.events);
+      setActivityError(null);
+    } catch (activityLoadError) {
+      if (requestedWorkspaceIdRef.current && requestedWorkspaceIdRef.current !== workspaceId) return;
+      setActivityError(activityLoadError instanceof Error ? activityLoadError.message : "Activity failed to load");
     }
-    const body = (await response.json()) as { events: ActivityEvent[] };
-    setActivityEvents(body.events);
-    setActivityError(null);
+  }, []);
+
+  const applyAiWorkspaceChange = useCallback(async (result: WorkspaceAiApplyResult) => {
+    if (!currentWorkspaceId) return;
+    const workspaceId = currentWorkspaceId;
+    if (requestedWorkspaceIdRef.current && requestedWorkspaceIdRef.current !== workspaceId) return;
+    cancelWorkspaceLoad();
+    const knownDocumentIds = new Set(documents.map((document) => document.id));
+    let openDocumentId = result.openDocumentId ?? result.documents.find((document) => !knownDocumentIds.has(document.id))?.id ?? null;
+    let availableFileNodes: WorkspaceFileNode[] = [
+      ...fileNodes.filter((fileNode) => !result.fileNodes.some((incomingFileNode) => incomingFileNode.id === fileNode.id)),
+      ...result.fileNodes
+    ];
+
+    if (result.documents.length > 0 || result.fileNodes.length > 0) {
+      setPayload((current) => {
+        if (!current?.activeWorkspace || current.activeWorkspace.id !== workspaceId) return current;
+        const incomingDocuments = new Map(result.documents.map((document) => [document.id, document]));
+        const incomingFileNodes = new Map(result.fileNodes.map((fileNode) => [fileNode.id, fileNode]));
+        const existingDocumentIds = new Set(current.activeWorkspace.documents.map((document) => document.id));
+        const existingFileNodeIds = new Set(current.activeWorkspace.fileNodes.map((fileNode) => fileNode.id));
+        const nextDocuments = [
+          ...current.activeWorkspace.documents.map((document) => incomingDocuments.get(document.id) ?? document),
+          ...result.documents.filter((document) => !existingDocumentIds.has(document.id))
+        ].sort((left, right) => left.position - right.position);
+        const nextFileNodes = [
+          ...current.activeWorkspace.fileNodes.map((fileNode) => incomingFileNodes.get(fileNode.id) ?? fileNode),
+          ...result.fileNodes.filter((fileNode) => !existingFileNodeIds.has(fileNode.id))
+        ];
+
+        return {
+          ...current,
+          activeWorkspace: {
+            ...current.activeWorkspace,
+            documents: nextDocuments,
+            fileNodes: nextFileNodes
+          },
+          workspaces: current.workspaces.map((workspace) => workspace.id === workspaceId ? { ...workspace, documentCount: nextDocuments.length } : workspace)
+        };
+      });
+    }
+
+    const returnedDocumentIds = new Set(result.documents.map((document) => document.id));
+    const hasReturnedOpenFileNode = Boolean(openDocumentId && result.fileNodes.some((fileNode) => fileNode.documentId === openDocumentId));
+    if (
+      (result.documents.length === 0 && result.fileNodes.length === 0)
+      || (openDocumentId && !knownDocumentIds.has(openDocumentId) && (!returnedDocumentIds.has(openDocumentId) || !hasReturnedOpenFileNode))
+    ) {
+      const refreshedPayload = await loadWorkspace(workspaceId);
+      if (refreshedPayload?.activeWorkspace?.id === workspaceId) {
+        availableFileNodes = refreshedPayload.activeWorkspace.fileNodes;
+        openDocumentId ??= refreshedPayload.activeWorkspace.documents.find((document) => !knownDocumentIds.has(document.id))?.id ?? null;
+      }
+    }
+
+    if (requestedWorkspaceIdRef.current && requestedWorkspaceIdRef.current !== workspaceId) return;
+
+    if (openDocumentId) {
+      const openFileNode = availableFileNodes.find((fileNode) => fileNode.documentId === openDocumentId) ?? null;
+      setWorkspaceView("files");
+      setOpenTabIds((current) => current.includes(openDocumentId) ? current : [...current, openDocumentId]);
+      setActiveTabId(openDocumentId);
+      setSelectedFileNodeId(openFileNode?.id ?? null);
+      setOutputLines([]);
+      setRunState("idle");
+      setSelectedRunId(null);
+
+      if (openFileNode?.parentId) {
+        const fileNodesById = new Map(availableFileNodes.map((fileNode) => [fileNode.id, fileNode]));
+        setExpandedFolderIds((current) => {
+          const next = new Set(current);
+          let parentId = openFileNode.parentId;
+          while (parentId) {
+            next.add(parentId);
+            parentId = fileNodesById.get(parentId)?.parentId ?? null;
+          }
+          return next;
+        });
+      }
+    }
+
+    await refreshActivity(workspaceId);
+  }, [cancelWorkspaceLoad, currentWorkspaceId, documents, fileNodes, loadWorkspace, refreshActivity]);
+
+  const prepareAiContext = useCallback(async (documentId: string | null) => {
+    if (!documentId) return;
+    documentFlushesRef.current.get(documentId)?.();
+    await documentSaveQueueRef.current?.flushAndWait(documentId);
   }, []);
 
   const refreshComments = useCallback(async (documentId: string) => {
@@ -972,13 +1480,21 @@ export function WorkspaceShell() {
     setCommentError(null);
   }, []);
 
+  const refreshWorkspaceComments = useCallback(async (workspaceId: string) => {
+    const response = await fetch(`/api/workspaces/${workspaceId}/comments`, { cache: "no-store" });
+    if (!response.ok) return;
+    const body = (await response.json()) as { comments: DocumentComment[] };
+    setWorkspaceComments(body.comments);
+  }, []);
+
   useEffect(() => {
     if (!currentWorkspaceId) return;
     const timer = window.setTimeout(() => {
       void refreshActivity(currentWorkspaceId);
+      void refreshWorkspaceComments(currentWorkspaceId);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [currentWorkspaceId, refreshActivity]);
+  }, [currentWorkspaceId, refreshActivity, refreshWorkspaceComments]);
 
   useEffect(() => {
     if (!currentDocumentId) return;
@@ -989,13 +1505,21 @@ export function WorkspaceShell() {
   }, [currentDocumentId, refreshComments]);
 
   async function createComment() {
-    if (!activeTab || !canEdit || commentPending) return;
+    if (!activeTab || !canEdit || commentPending || commentDraft.trim().length === 0) return;
     setCommentPending(true);
     setCommentError(null);
 
     try {
+      documentFlushesRef.current.get(activeTab.id)?.();
+      await documentSaveQueueRef.current?.flushAndWait(activeTab.id);
       const response = await fetch(`/api/documents/${activeTab.id}/comments`, {
-        body: JSON.stringify({ body: commentDraft }),
+        body: JSON.stringify({
+          body: commentDraft,
+          fileNodeId: activeFileNode?.id ?? null,
+          lineEnd: activeTab.type === "code" ? commentLineSelection?.endLine ?? null : null,
+          lineStart: activeTab.type === "code" ? commentLineSelection?.startLine ?? null : null,
+          shapeId: activeTab.type === "canvas" ? commentShapeSelection?.id ?? null : null
+        }),
         headers: { "content-type": "application/json" },
         method: "POST"
       });
@@ -1007,6 +1531,7 @@ export function WorkspaceShell() {
 
       const body = (await response.json()) as { comment: DocumentComment };
       setComments((current) => [body.comment, ...current]);
+      setWorkspaceComments((current) => [body.comment, ...current]);
       setCommentDraft("");
       if (activeWorkspace) void refreshActivity(activeWorkspace.id);
     } catch (commentCreateError) {
@@ -1035,6 +1560,7 @@ export function WorkspaceShell() {
 
       const body = (await response.json()) as { comment: DocumentComment };
       setComments((current) => current.map((comment) => comment.id === body.comment.id ? body.comment : comment));
+      setWorkspaceComments((current) => current.map((comment) => comment.id === body.comment.id ? body.comment : comment));
       if (activeWorkspace) void refreshActivity(activeWorkspace.id);
     } catch (commentUpdateError) {
       setCommentError(commentUpdateError instanceof Error ? commentUpdateError.message : "Comment update failed");
@@ -1067,8 +1593,7 @@ export function WorkspaceShell() {
   }
 
   function inviteTeammates() {
-    setShareOpen(true);
-    setUsersOpen(false);
+    setWorkspaceView("dashboard");
   }
 
   async function createInvite() {
@@ -1078,8 +1603,8 @@ export function WorkspaceShell() {
 
     const response = await fetch(`/api/workspaces/${activeWorkspace.id}/invites`, {
       body: JSON.stringify({
-        email: inviteEmail,
-        role: inviteRole
+        email: null,
+        role: activeWorkspace.settings.defaultInviteRole === "editor" ? "editor" : "viewer"
       }),
       headers: { "content-type": "application/json" },
       method: "POST"
@@ -1094,7 +1619,6 @@ export function WorkspaceShell() {
     }
 
     setInviteLink(body.url);
-    setInviteEmail("");
     setPayload((current) => {
       if (!current?.activeWorkspace) return current;
       return {
@@ -1157,6 +1681,7 @@ export function WorkspaceShell() {
       }
 
       const body = (await response.json()) as { member: WorkspaceMember };
+      setMemberRoleMenuOpenId(null);
       setPayload((current) => {
         if (!current?.activeWorkspace) return current;
         return {
@@ -1181,9 +1706,6 @@ export function WorkspaceShell() {
 
   async function removeMember(member: WorkspaceMember) {
     if (!activeWorkspace || !canManageMembers || memberActionPendingId) return;
-
-    const confirmed = window.confirm(`Remove ${member.name} from this workspace?`);
-    if (!confirmed) return;
 
     setMemberActionPendingId(member.id);
     setMemberActionError(null);
@@ -1218,87 +1740,69 @@ export function WorkspaceShell() {
     }
   }
 
-  async function importGitRepository() {
-    if (!activeWorkspace || !canEdit || gitImportPending) return;
-
-    setGitImportPending(true);
-    setGitImportError(null);
-    setGitImportSummary(null);
+  async function runDocument(document: WorkspaceDocument) {
+    const documentHasActiveRun = jobRuns.some((run) => run.documentId === document.id && (run.status === "pending" || run.status === "running"));
+    if (!canEdit || documentHasActiveRun || runState === "running" || document.type !== "code") return;
+    const workspaceId = activeWorkspace?.id;
+    if (!workspaceId) return;
+    selectDocument(document.id);
+    setActivePanel("Output");
+    setSidePanelCollapsed(false);
+    setRunState("running");
+    setOutputLines([`$ slate run ${document.title}`, `environment=${selectedExecutionEnvironmentId}`, "creating BullMQ job"]);
 
     try {
-      const response = await fetch(`/api/workspaces/${activeWorkspace.id}/imports/git`, {
-        body: JSON.stringify({ url: gitImportUrl }),
+      const response = await fetch("/api/jobs/runs", {
+        body: JSON.stringify({ documentId: document.id, environmentId: selectedExecutionEnvironmentId }),
         headers: { "content-type": "application/json" },
         method: "POST"
       });
 
       if (!response.ok) {
-        setGitImportError(await readActionError(response, "Git import failed"));
+        const message = await readActionError(response, "Run creation failed");
+        setRunState("failed");
+        setOutputLines((current) => [...current, message]);
         return;
       }
 
-      const body = (await response.json()) as { documents: WorkspaceDocument[]; summary?: { importedFiles: number; scannedFiles: number; skippedFiles: number } };
+      const body = (await response.json()) as { run: WorkspaceJobRun };
+      setSelectedRunId(body.run.id);
       setPayload((current) => {
-        if (!current?.activeWorkspace) return current;
+        if (!current?.activeWorkspace || current.activeWorkspace.id !== workspaceId) return current;
         return {
           ...current,
           activeWorkspace: {
             ...current.activeWorkspace,
-            documents: [...current.activeWorkspace.documents, ...body.documents]
-          },
-          workspaces: current.workspaces.map((workspace) => (
-            workspace.id === activeWorkspace.id ? { ...workspace, documentCount: workspace.documentCount + body.documents.length } : workspace
-          ))
+            jobRuns: [body.run, ...current.activeWorkspace.jobRuns.filter((run) => run.id !== body.run.id)]
+          }
         };
       });
-      setActiveTabId(body.documents[0]?.id ?? activeTabId);
-      if (body.summary) {
-        setGitImportSummary(`${body.summary.importedFiles} imported · ${body.summary.skippedFiles} skipped · ${body.summary.scannedFiles} scanned`);
-      }
-      setGitImportUrl("");
-      void loadWorkspace(activeWorkspace.id);
-    } catch (importError) {
-      setGitImportError(importError instanceof Error ? importError.message : "Git import failed");
-    } finally {
-      setGitImportPending(false);
+      setOutputLines((current) => [...current, `job ${body.run.id} queued`, body.run.output]);
+      const latestRuns = await waitForRunCompletion(workspaceId, body.run.id);
+      const finalRun = latestRuns.find((run) => run.id === body.run.id);
+      setRunState(finalRun?.status === "failed" ? "failed" : finalRun?.status === "completed" ? "done" : "idle");
+    } catch (runError) {
+      setRunState("failed");
+      setOutputLines((current) => [...current, runError instanceof Error ? runError.message : "Run failed"]);
     }
   }
 
   async function runActiveDocument() {
-    if (!activeTab || !canEdit || runState === "running" || activeTab.type !== "code") return;
-    const workspaceId = activeWorkspace?.id;
-    if (!workspaceId) return;
-    setActivePanel("Output");
-    setRunState("running");
-    setOutputLines([`$ slate run ${activeTab.title}`, `environment=${selectedExecutionEnvironmentId}`, "creating BullMQ job"]);
+    if (!activeTab) return;
+    await runDocument(activeTab);
+  }
 
-    const response = await fetch("/api/jobs/runs", {
-      body: JSON.stringify({ documentId: activeTab.id, environmentId: selectedExecutionEnvironmentId }),
-      headers: { "content-type": "application/json" },
-      method: "POST"
-    });
-
-    if (!response.ok) {
-      setRunState("failed");
-      const message = await response.text();
-      setOutputLines((current) => [...current, message]);
-      return;
-    }
-
-    const body = (await response.json()) as { run: WorkspaceJobRun };
-    setSelectedRunId(body.run.id);
-    setOutputLines((current) => [...current, `job ${body.run.id} queued`, body.run.output]);
+  async function waitForRunCompletion(workspaceId: string, runId: string) {
     let latestRuns = await refreshRunHistory(workspaceId);
 
-    for (let attempt = 0; attempt < 8; attempt += 1) {
-      const latestRun = latestRuns.find((run) => run.id === body.run.id);
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const latestRun = latestRuns.find((run) => run.id === runId);
       if (latestRun?.status === "completed" || latestRun?.status === "failed") break;
-      await new Promise((resolve) => window.setTimeout(resolve, 750));
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
       latestRuns = await refreshRunHistory(workspaceId);
     }
 
-    const finalRun = latestRuns.find((run) => run.id === body.run.id);
-    setRunState(finalRun?.status === "failed" ? "failed" : finalRun?.status === "completed" ? "done" : "idle");
+    return latestRuns;
   }
 
   function runCommand(action: () => void) {
@@ -1318,6 +1822,21 @@ export function WorkspaceShell() {
     if (icon === "invite") return <UsersIcon />;
     if (icon === "run") return <PlayIcon />;
     return <CommandIcon />;
+  }
+
+  function renderCommandPaletteItem(item: CommandPaletteItem) {
+    const enabledIndex = enabledCommandPaletteItems.findIndex((enabledItem) => enabledItem.id === item.id);
+    const active = enabledIndex === commandPaletteSelectedIndex && !item.disabled;
+    return (
+      <button className={active ? "command-palette-item active" : "command-palette-item"} disabled={item.disabled} key={item.id} onClick={() => runPaletteItem(item)} title={item.disabledReason} type="button">
+        <span className="command-palette-item-icon">{renderCommandIcon(item.icon)}</span>
+        <span className="command-palette-item-copy">
+          <strong>{item.label}</strong>
+          <small>{item.disabledReason ?? item.meta}</small>
+        </span>
+        {!item.disabled && <kbd>{item.shortcut ?? "↵"}</kbd>}
+      </button>
+    );
   }
 
   function documentTypeForFileNode(fileNode: WorkspaceFileNode) {
@@ -1364,6 +1883,555 @@ export function WorkspaceShell() {
     );
   }
 
+  function renderWorkspaceDashboard() {
+    const codeDocuments = documents.filter((document) => document.type === "code");
+    const noteDocuments = documents.filter((document) => document.type === "note");
+    const canvasDocuments = documents.filter((document) => document.type === "canvas");
+    const foldersCount = fileNodes.filter((fileNode) => fileNode.kind === "folder").length;
+    const fileCount = Math.max(0, fileNodes.length - foldersCount);
+    const folderUsage = getFileTreeChartData().slice(0, 5);
+    const folderUsageMax = Math.max(1, ...folderUsage.map((item) => item.files + item.folders));
+    const completedRuns = jobRuns.filter((run) => run.status === "completed").length;
+    const failedRuns = jobRuns.filter((run) => run.status === "failed").length;
+    const activeRuns = jobRuns.length - completedRuns - failedRuns;
+    const latestRun = jobRuns[0] ?? null;
+    const recentDocuments = [...documents]
+      .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+      .slice(0, 4);
+    const continueDocument = recentDocuments[0] ?? null;
+    const memberCount = activeWorkspace?.members.length ?? 0;
+    const latestActivityAt = activityEvents[0]?.createdAt ?? null;
+    const commentsWithContext = [...workspaceComments]
+      .sort((left, right) => Number(Boolean(left.resolvedAt)) - Number(Boolean(right.resolvedAt)) || Date.parse(right.createdAt) - Date.parse(left.createdAt))
+      .slice(0, 4)
+      .map((comment) => ({
+      ...comment,
+      documentTitle: documents.find((document) => document.id === comment.documentId)?.title ?? "Unknown file"
+      }));
+    const continueFileNode = continueDocument ? fileNodes.find((fileNode) => fileNode.documentId === continueDocument.id) ?? null : null;
+    const continuePathParts = continueFileNode ? [continueFileNode.name] : continueDocument ? [continueDocument.title] : [];
+    let continueParentId = continueFileNode?.parentId ?? null;
+
+    while (continueParentId) {
+      const parent = fileNodes.find((fileNode) => fileNode.id === continueParentId);
+      if (!parent) break;
+      continuePathParts.unshift(parent.name);
+      continueParentId = parent.parentId;
+    }
+
+    const continueActivity = continueDocument
+      ? activityEvents.find((event) => event.documentTitle === continueDocument.title) ?? null
+      : null;
+    const visibleMembers = activeWorkspace?.members.slice(0, membersManageOpen ? activeWorkspace.members.length : 5) ?? [];
+
+    return (
+      <section className="workspace-dashboard-view">
+        <header className="workspace-dashboard-header">
+          <div className="workspace-dashboard-identity">
+            <span className="workspace-dashboard-mark">{activeWorkspace?.abbreviation ?? "SL"}</span>
+            <div>
+              <h1>{activeWorkspace?.name ?? "Slate workspace"}</h1>
+              <p>{activeWorkspace?.settings.description || "Code, canvas, notes, and team context in one workspace."}</p>
+              <small>
+                {documents.length} {documents.length === 1 ? "document" : "documents"} · {memberCount} {memberCount === 1 ? "member" : "members"} · {jobRuns.length} {jobRuns.length === 1 ? "run" : "runs"}
+                {latestActivityAt ? ` · last activity ${formatRelativeTime(latestActivityAt)}` : ""}
+              </small>
+            </div>
+          </div>
+          <div className="workspace-dashboard-header-actions">
+            <div className="workspace-dashboard-context-group">
+              <div className="workspace-dashboard-status" aria-label="Workspace status">
+                <span className={`connection-pill ${syncState === "saving" ? "connection-saving" : syncState === "offline" || syncState === "blocked" ? "connection-offline" : ""}`} title={statusDetail}><i />{statusText.toLowerCase()}</span>
+                <span className={`connection-pill realtime-${realtimeState} ${isRealtimeRecovering(realtimeState) ? "workspace-status-warning" : ""}`} title={realtimeStatusDetail}><i />{realtimeStatusText.toLowerCase()}</span>
+              </div>
+              <div className="workspace-dashboard-member-stack" aria-label={`${memberCount} workspace members`}>
+                {activeWorkspace?.members.slice(0, 4).map((member) => (
+                  <span className={`avatar avatar-${member.color}`} key={member.id} title={`${member.name} · ${member.role}`}>{member.initials}</span>
+                ))}
+                {memberCount > 4 && <small>+{memberCount - 4}</small>}
+              </div>
+            </div>
+            <button className={continueDocument ? "workspace-dashboard-primary-action secondary" : "workspace-dashboard-primary-action"} disabled={!canEdit} onClick={() => beginFileCreation("document", undefined, "new-file.ts")} type="button">
+              <FilePlusIcon />
+              New document
+            </button>
+            <button aria-label="Workspace settings" className="workspace-dashboard-settings-action" onClick={() => openSettings(false)} title="Workspace settings" type="button">
+              <SettingsIcon />
+            </button>
+          </div>
+        </header>
+
+        <article className="workspace-continue-surface">
+          <div className="workspace-dashboard-card-heading workspace-continue-heading">
+            <div>
+              <span>Continue working</span>
+              <small>{continueDocument ? "Pick up from the latest workspace change" : "Create the first surface in this workspace"}</small>
+            </div>
+          </div>
+          {continueDocument ? (
+            <div className="workspace-continue-content">
+              <button className={`workspace-continue-document document-type-${continueDocument.type}`} onClick={() => selectDocument(continueDocument.id)} type="button">
+                <span className="workspace-continue-icon">{renderDocumentTypeIcon(continueDocument.type)}</span>
+                <span className="workspace-continue-copy">
+                  {continuePathParts.length > 1 && <small>{continuePathParts.slice(0, -1).join(" / ")}</small>}
+                  <strong>{continueDocument.title}</strong>
+                  <span>{continueDocument.type === "code" ? "Code" : continueDocument.type === "note" ? "Note" : "Canvas"} · updated {formatRelativeTime(continueDocument.updatedAt)}</span>
+                </span>
+                <span className="workspace-continue-presence">
+                  <small>{continueActivity?.actorName ?? payload?.activeUser.name ?? "Workspace team"} · <strong>{statusText}</strong></small>
+                </span>
+              </button>
+              <div className="workspace-continue-actions">
+                <button className="primary" onClick={() => selectDocument(continueDocument.id)} type="button">Open</button>
+                {continueDocument.type === "code" && (
+                  <button disabled={!canEdit || jobRuns.some((run) => run.documentId === continueDocument.id && (run.status === "pending" || run.status === "running"))} onClick={() => void runDocument(continueDocument)} type="button">
+                    <PlayIcon />
+                    Run
+                  </button>
+                )}
+                <button onClick={() => { selectDocument(continueDocument.id); setWorkspaceView("ai"); setSidePanelCollapsed(true); }} type="button">
+                  <AiIcon />
+                  Ask AI
+                </button>
+                {canInvite && (
+                  <button disabled={inviteSubmitting} onClick={createInvite} type="button">
+                    <UsersIcon />
+                    {inviteSubmitting ? "Creating" : shareCopied ? "Copied" : "Share"}
+                  </button>
+                )}
+                <button onClick={() => openDocumentHistory(continueDocument.id)} type="button">
+                  <RefreshIcon />
+                  History
+                </button>
+              </div>
+              {inviteLink && (
+                <button className="workspace-continue-invite-link" onClick={() => copyInvite()} type="button">
+                  {shareCopied ? "Invite link copied" : "Copy invite link"}
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="workspace-continue-empty">
+              <strong>Your workspace is ready for its first document.</strong>
+              <p>Start with executable code, a shared note, or a visual canvas.</p>
+              <div>
+                <button disabled={!canEdit} onClick={() => beginFileCreation("document", undefined, "new-file.ts")} type="button"><CodeIcon />Create code file</button>
+                <button disabled={!canEdit} onClick={() => beginFileCreation("document", undefined, "new-note.md")} type="button"><NoteIcon />Create note</button>
+                <button disabled={!canEdit} onClick={() => beginFileCreation("document", undefined, "new-canvas.canvas")} type="button"><CanvasIcon />Create canvas</button>
+              </div>
+            </div>
+          )}
+        </article>
+
+        <div className="workspace-overview-heading">
+          <span>Workspace overview</span>
+        </div>
+
+        <div className="workspace-dashboard-grid">
+          <article className="workspace-dashboard-card dashboard-card-documents">
+            <div className="workspace-dashboard-card-heading">
+              <div><span>Documents</span><small>Recently updated</small></div>
+              <button onClick={() => setWorkspaceView("files")} type="button">Open files</button>
+            </div>
+            <div className="workspace-dashboard-doc-types">
+              <button onClick={() => beginFileCreation("document", undefined, "new-file.ts")} type="button">
+                <CodeIcon />
+                <strong>{codeDocuments.length}</strong>
+                <span>Code files</span>
+              </button>
+              <button onClick={() => beginFileCreation("document", undefined, "new-note.md")} type="button">
+                <NoteIcon />
+                <strong>{noteDocuments.length}</strong>
+                <span>Notes</span>
+              </button>
+              <button onClick={() => beginFileCreation("document", undefined, "new-canvas.canvas")} type="button">
+                <CanvasIcon />
+                <strong>{canvasDocuments.length}</strong>
+                <span>Canvases</span>
+              </button>
+            </div>
+            <div className="workspace-dashboard-recent-docs">
+              {recentDocuments.map((document) => (
+                <button key={document.id} onClick={() => selectDocument(document.id)} type="button">
+                  {document.type === "code" ? <CodeIcon /> : document.type === "note" ? <NoteIcon /> : <CanvasIcon />}
+                  <strong>{document.title}</strong>
+                  <small>{formatRelativeTime(document.updatedAt)}</small>
+                </button>
+              ))}
+              {recentDocuments.length === 0 && <p>No documents yet. Create one above to get started.</p>}
+            </div>
+          </article>
+
+          <article className="workspace-dashboard-card dashboard-card-activity">
+            <div className="workspace-dashboard-card-heading">
+              <div><span>Recent activity</span><small>Latest workspace changes</small></div>
+              <button onClick={() => setWorkspaceView("activity")} type="button">View all</button>
+            </div>
+            <div className="workspace-dashboard-feed">
+              {activityEvents.slice(0, 5).map((event, index) => {
+                const eventDocument = event.documentTitle ? documents.find((document) => document.title === event.documentTitle) ?? null : null;
+                const previousActorName = index > 0 ? activityEvents[index - 1]?.actorName ?? null : null;
+                const showActorName = index === 0 || previousActorName !== event.actorName;
+                return (
+                  <button key={event.id} onClick={() => eventDocument ? selectDocument(eventDocument.id) : setWorkspaceView("activity")} type="button">
+                    <span>{renderActivityEventIcon(event)}</span>
+                    <div>
+                      <strong>{showActorName && <b>{event.actorName ?? "System"} </b>}{activityLabel(event)}</strong>
+                      <small>{event.documentTitle ? `${event.documentTitle} · ` : ""}{formatRelativeTime(event.createdAt)}</small>
+                    </div>
+                  </button>
+                );
+              })}
+              {activityEvents.length === 0 && <p>Changes to documents, comments, runs, members, and invites will appear here.</p>}
+            </div>
+          </article>
+
+          <article className="workspace-dashboard-card dashboard-card-runs">
+            <div className="workspace-dashboard-card-heading">
+              <div><span>Runs</span><small>Execution status</small></div>
+              {latestRun && <button onClick={() => openDashboardRun(latestRun)} type="button">View history</button>}
+            </div>
+            {latestRun ? (
+              <button className={`workspace-dashboard-latest-run run-status-${latestRun.status}`} onClick={() => openDashboardRun(latestRun)} type="button">
+                <span>{latestRun.status}</span>
+                <strong>{latestRun.documentTitle ?? "Workspace run"}</strong>
+                <small>{formatRelativeTime(latestRun.createdAt)} · {formatRunDuration(latestRun)}</small>
+                {(latestRun.status === "pending" || latestRun.status === "running") && <i>Open run</i>}
+              </button>
+            ) : (
+              <div className="workspace-dashboard-empty-compact">
+                <strong>No runs yet</strong>
+                <button disabled={!codeDocuments[0] || !canEdit} onClick={() => codeDocuments[0] ? void runDocument(codeDocuments[0]) : undefined} type="button">Run your first check</button>
+              </div>
+            )}
+            <p className="workspace-dashboard-run-summary">{completedRuns} passed · {failedRuns} failed · {activeRuns} running</p>
+          </article>
+
+          <article className="workspace-dashboard-card dashboard-card-comments">
+            <div className="workspace-dashboard-card-heading">
+              <div><span>Comments</span><small>Open items first</small></div>
+              <button onClick={() => setWorkspaceView("comments")} type="button">View all</button>
+            </div>
+            <div className="workspace-dashboard-comments">
+              {commentsWithContext.map((comment) => (
+                <button className={comment.resolvedAt ? "resolved" : ""} key={comment.id} onClick={() => { selectDocument(comment.documentId); setActivePanel("Comments"); setSidePanelCollapsed(false); }} type="button">
+                  <div>
+                    <strong>{comment.authorName}</strong>
+                    <span>{comment.documentTitle}</span>
+                    <small>{formatRelativeTime(comment.createdAt)}</small>
+                  </div>
+                  <p>{comment.body}</p>
+                  <em>{comment.resolvedAt ? "resolved" : "open"}</em>
+                </button>
+              ))}
+              {commentsWithContext.length === 0 && <p><strong>No open comments.</strong><span>Comments that need attention will appear here.</span></p>}
+            </div>
+          </article>
+
+          <article className="workspace-dashboard-card dashboard-card-structure">
+            <div className="workspace-dashboard-card-heading">
+              <div><span>Project structure</span><small>{foldersCount} folders · {fileCount} files</small></div>
+              <button onClick={() => setWorkspaceView("files")} type="button">Open explorer</button>
+            </div>
+            <div className="workspace-dashboard-tree-list" aria-label="Largest folders">
+              {folderUsage.map((item) => (
+                <button className="workspace-dashboard-tree-row" key={item.id} onClick={() => openDashboardFolder(item.id)} type="button">
+                  <div className="workspace-dashboard-tree-row-top">
+                    <strong title={item.label}>{item.label}</strong>
+                    <small>{item.files} {item.files === 1 ? "file" : "files"}{item.folders > 0 ? ` · ${item.folders} ${item.folders === 1 ? "folder" : "folders"}` : ""}</small>
+                  </div>
+                  <span className="workspace-dashboard-tree-bar">
+                    <i style={{ width: `${Math.max(4, (item.files + item.folders) / folderUsageMax * 100)}%` }} />
+                  </span>
+                </button>
+              ))}
+              {folderUsage.length === 0 && <p>No structure yet. Create the first file or folder to begin.</p>}
+            </div>
+            <div className="workspace-file-tree-chart-legend">
+              <span>{foldersCount} folders</span>
+              <span>{fileCount} files</span>
+              <span>{documents.length} docs</span>
+            </div>
+          </article>
+
+          <article className="workspace-dashboard-card workspace-dashboard-members-card dashboard-card-members">
+            <div className="workspace-dashboard-card-heading">
+              <div><span>Members</span><small>{memberCount} people in this workspace</small></div>
+              <div className="workspace-dashboard-members-heading">
+                {canManageMembers && (
+                  <button onClick={() => { setMembersManageOpen((current) => !current); setMemberRoleMenuOpenId(null); }} type="button">
+                    {membersManageOpen ? "Done" : "Manage"}
+                  </button>
+                )}
+                <b>{memberCount}</b>
+              </div>
+            </div>
+            <div className="workspace-dashboard-members">
+              {visibleMembers.map((member) => {
+                const isCurrentUser = member.id === payload?.activeUser.id;
+
+                return (
+                  <div className="workspace-dashboard-member-row" key={member.id}>
+                    <span className={`avatar avatar-${member.color}`}>{member.initials}</span>
+                    <div className="workspace-dashboard-member-identity">
+                      <strong>{member.name}{isCurrentUser ? " · You" : ""}</strong>
+                      <span>{member.email}</span>
+                    </div>
+                    {membersManageOpen && !isCurrentUser ? (
+                      <>
+                        <div className="workspace-dashboard-role-menu" data-open={memberRoleMenuOpenId === member.id ? "true" : "false"}>
+                          <button disabled={memberActionPendingId === member.id} onClick={() => setMemberRoleMenuOpenId((current) => current === member.id ? null : member.id)} type="button">
+                            {member.role}
+                          </button>
+                          {memberRoleMenuOpenId === member.id && (
+                            <div role="menu">
+                              {(["owner", "editor", "viewer"] as WorkspaceRole[]).map((role) => (
+                                <button className={member.role === role ? "active" : ""} disabled={member.role === role || memberActionPendingId === member.id} key={role} onClick={() => void updateMemberRole(member.id, role)} role="menuitem" type="button">{role}</button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <button className="workspace-dashboard-remove-member" disabled={memberActionPendingId === member.id} onClick={() => void removeMember(member)} type="button">
+                          {memberActionPendingId === member.id ? "..." : "Remove"}
+                        </button>
+                      </>
+                    ) : (
+                      <span className="workspace-dashboard-role-static">{member.role}</span>
+                    )}
+                  </div>
+                );
+              })}
+              {!membersManageOpen && memberCount > visibleMembers.length && <button className="workspace-dashboard-members-more" onClick={() => setMembersManageOpen(true)} type="button">View all {memberCount} members</button>}
+              {memberActionError && <strong className="member-action-error">{memberActionError}</strong>}
+              {canInvite && (
+                <div className="workspace-dashboard-share-box">
+                  <button className="primary-control" disabled={inviteSubmitting} onClick={createInvite} type="button">
+                    {inviteSubmitting ? "Creating" : "Invite member"}
+                  </button>
+                  {inviteLink && (
+                    <button className="light-control workspace-dashboard-invite-link" onClick={() => copyInvite()} type="button">
+                      {shareCopied ? "Copied" : inviteLink}
+                    </button>
+                  )}
+                  {inviteError && <strong className="auth-error">{inviteError}</strong>}
+                  {activeWorkspace && activeWorkspace.invites.length > 0 && (
+                    <div className="workspace-dashboard-invites">
+                      {activeWorkspace.invites.slice(0, 3).map((invite) => (
+                        <div key={invite.id}>
+                          <span>{invite.email ?? "Link invite"}</span>
+                          <button disabled={invite.acceptedAt !== null || inviteActionPendingId === invite.id} onClick={() => void revokeInvite(invite.id)} type="button">
+                            {inviteActionPendingId === invite.id ? "..." : invite.acceptedAt ? "Accepted" : "Revoke"}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </article>
+        </div>
+      </section>
+    );
+  }
+
+  function getFileTreeChartData() {
+    const rootNodes = fileNodes.filter((fileNode) => fileNode.parentId === null);
+    const rootFolders = rootNodes.filter((fileNode) => fileNode.kind === "folder");
+    const rootFiles = rootNodes.filter((fileNode) => fileNode.kind === "document").length;
+    const countChildren = (folderId: string): { files: number; folders: number } => {
+      const children = fileNodes.filter((fileNode) => fileNode.parentId === folderId);
+      return children.reduce((counts, child) => {
+        if (child.kind === "folder") {
+          const nestedCounts = countChildren(child.id);
+          return {
+            files: counts.files + nestedCounts.files,
+            folders: counts.folders + 1 + nestedCounts.folders
+          };
+        }
+
+        return {
+          files: counts.files + 1,
+          folders: counts.folders
+        };
+      }, { files: 0, folders: 0 });
+    };
+
+    const folderData = rootFolders.map((folder) => {
+      const counts = countChildren(folder.id);
+      return {
+        files: counts.files,
+        folders: counts.folders,
+        id: folder.id,
+        label: folder.name
+      };
+    });
+
+    const rootData = rootFiles > 0 || folderData.length === 0 ? [{
+      files: rootFiles,
+      folders: rootFolders.length,
+      id: "root",
+      label: "Root"
+    }] : [];
+
+    return [...rootData, ...folderData]
+      .sort((left, right) => right.files + right.folders - (left.files + left.folders) || left.label.localeCompare(right.label))
+      .slice(0, 5);
+  }
+
+  function renderWorkspaceActivity() {
+    const normalizedSearch = activitySearch.trim().toLowerCase();
+    const activityFilters: { id: ActivityFilter; label: string }[] = [
+      { id: "all", label: "All activity" },
+      { id: "documents", label: "Documents" },
+      { id: "runs", label: "Runs" },
+      { id: "members", label: "Members" },
+      { id: "ai", label: "AI" }
+    ];
+    const visibleActivityEvents = activityEvents.filter((event) => {
+      if (activityFilter !== "all" && activityCategory(event) !== activityFilter) return false;
+      if (!normalizedSearch) return true;
+      return [event.actorName, event.documentTitle, activityLabel(event), event.type]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedSearch);
+    });
+    const groupedActivityEvents = visibleActivityEvents.reduce<Map<string, ActivityEvent[]>>((groups, event) => {
+      const groupLabel = activityDateGroupLabel(event.createdAt);
+      groups.set(groupLabel, [...groups.get(groupLabel) ?? [], event]);
+      return groups;
+    }, new Map());
+
+    return (
+      <section className="workspace-activity-view">
+        <div className="workspace-activity-content">
+          <div className="workspace-view-heading workspace-activity-heading">
+            <h1>Activity</h1>
+            <p>Workspace changes · {activityEvents.length} {activityEvents.length === 1 ? "event" : "events"}</p>
+          </div>
+          <div className="workspace-activity-controls">
+            <div className="workspace-activity-filters" aria-label="Activity filters" role="tablist">
+              {activityFilters.map((filter) => (
+                <button aria-selected={activityFilter === filter.id} className={activityFilter === filter.id ? "active" : ""} key={filter.id} onClick={() => setActivityFilter(filter.id)} role="tab" type="button">
+                  {filter.label}
+                </button>
+              ))}
+            </div>
+            <input aria-label="Search activity" onChange={(event) => setActivitySearch(event.target.value)} placeholder="Search activity" type="search" value={activitySearch} />
+          </div>
+          <div className="workspace-activity-groups">
+            {[...groupedActivityEvents.entries()].map(([groupLabel, groupEvents]) => (
+              <section className="workspace-activity-group" key={groupLabel}>
+                <h2>{groupLabel}</h2>
+                <div className="workspace-activity-list">
+                  {groupEvents.map((event) => (
+                    <article key={event.id}>
+                      <span className={`activity-event-icon activity-event-${activityCategory(event)}`}>{renderActivityEventIcon(event)}</span>
+                      <div>
+                        <strong>{shortActorName(event.actorName)} {activityLabel(event)}</strong>
+                        <p>{event.documentTitle ? event.documentTitle : `Workspace: ${activeWorkspace?.name ?? "Slate"}`}</p>
+                      </div>
+                      <time title={new Date(event.createdAt).toLocaleString()}>{formatActivityTime(event.createdAt)}</time>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            ))}
+            {visibleActivityEvents.length === 0 && <div className="workspace-view-empty">{activityEvents.length === 0 ? "No activity yet." : "No events match this filter."}</div>}
+            {activityError && <strong className="panel-error">{activityError}</strong>}
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  function renderCommentFilters() {
+    const filters: { id: CommentFilter; label: string }[] = [
+      { id: "all", label: "All" },
+      { id: "open", label: "Open" },
+      { id: "resolved", label: "Resolved" }
+    ];
+
+    return (
+      <div aria-label="Filter comments" className="comment-filters" role="group">
+        {filters.map((filter) => (
+          <button aria-pressed={commentFilter === filter.id} className={commentFilter === filter.id ? "active" : ""} key={filter.id} onClick={() => setCommentFilter(filter.id)} type="button">
+            {filter.label}
+          </button>
+        ))}
+      </div>
+    );
+  }
+
+  function renderCommentComposer() {
+    if (!activeTab || !canEdit) return null;
+    return (
+      <form className="comment-composer" data-expanded={commentDraft.trim().length > 0 ? "true" : "false"} onSubmit={(event) => { event.preventDefault(); void createComment(); }}>
+        <textarea aria-label="New comment" onChange={(event) => setCommentDraft(event.target.value)} placeholder="Add a comment..." value={commentDraft} />
+        <div className="comment-composer-footer">
+          <small title={commentComposerContext}>{commentComposerContext}</small>
+          <button disabled={commentPending || commentDraft.trim().length === 0} type="submit">{commentPending ? "Posting…" : "Comment"}</button>
+        </div>
+      </form>
+    );
+  }
+
+  function renderCommentEmptyState() {
+    if (!activeTab) {
+      return <div className="comment-empty-state"><strong>No document selected</strong><span>Open a document to view its discussion.</span></div>;
+    }
+    if (activeDocumentComments.length === 0) {
+      return <div className="comment-empty-state"><strong>No comments yet</strong><span>Start a discussion about this document.</span></div>;
+    }
+    return <div className="comment-empty-state"><strong>No {commentFilter} comments</strong><span>Choose another filter to view the rest of the discussion.</span></div>;
+  }
+
+  function renderCommentItem(comment: DocumentComment) {
+    return (
+      <article className={comment.resolvedAt ? "comment-item resolved" : "comment-item"} key={comment.id}>
+        <header className="comment-meta">
+          <span className="avatar avatar-gray">{comment.authorName.slice(0, 1).toUpperCase()}</span>
+          <div>
+            <strong>{comment.authorName}</strong>
+            <time title={new Date(comment.createdAt).toLocaleString()}>{formatRelativeTime(comment.createdAt)}</time>
+          </div>
+          {comment.resolvedAt && <b className="comment-status">Resolved</b>}
+        </header>
+        <small className="comment-context">{getCommentContextLabel(comment)}</small>
+        <p className="comment-body">{comment.body}</p>
+        {canEdit && (
+          <footer className="comment-actions">
+            <button disabled={commentActionPendingId === comment.id} onClick={() => void setCommentResolved(comment.id, !comment.resolvedAt)} type="button">
+              {comment.resolvedAt ? "Reopen" : "Resolve"}
+            </button>
+          </footer>
+        )}
+      </article>
+    );
+  }
+
+  function renderWorkspaceComments() {
+    return (
+      <section className="workspace-comments-view">
+        <div className="workspace-view-heading">
+          <span>Comments</span>
+          <h1>{activeTab ? activeTab.title : "Document comments"}</h1>
+          <p>{activeTab ? "Review and resolve comments on the active document." : "Open a document to load its comment thread."}</p>
+        </div>
+        <div className="workspace-comments-controls">
+          {renderCommentFilters()}
+          {renderCommentComposer()}
+          {commentError && <strong className="panel-error">{commentError}</strong>}
+        </div>
+        <div className={filteredComments.length === 0 ? "workspace-comments-list empty" : "workspace-comments-list"}>
+          {filteredComments.map(renderCommentItem)}
+          {filteredComments.length === 0 && renderCommentEmptyState()}
+        </div>
+      </section>
+    );
+  }
+
   function activityLabel(event: ActivityEvent) {
     const labels: Record<string, string> = {
       "document.created": "created a document",
@@ -1383,6 +2451,10 @@ export function WorkspaceShell() {
       "invite.revoked": "revoked an invite",
       "member.removed": "removed a member",
       "member.role_changed": "changed a member role",
+      "workspace.renamed": "renamed the workspace",
+      "ai.action.applied": "applied an AI draft",
+      "ai.action.discarded": "discarded an AI draft",
+      "ai.draft.created": "prepared AI draft changes",
       "run.completed": "completed a run",
       "run.failed": "failed a run",
       "run.queued": "queued a run"
@@ -1391,22 +2463,65 @@ export function WorkspaceShell() {
     return labels[event.type] ?? event.type.replace(/\./g, " ");
   }
 
+  function activityCategory(event: ActivityEvent): ActivityFilter {
+    if (event.type.startsWith("ai.")) return "ai";
+    if (event.type.startsWith("run.")) return "runs";
+    if (event.type.startsWith("member.") || event.type.startsWith("invite.") || event.type.startsWith("workspace.")) return "members";
+    if (event.type.startsWith("document.") || event.type.startsWith("file.") || event.type.startsWith("comment.") || event.type.startsWith("git_import.")) return "documents";
+    return "all";
+  }
+
+  function activityDateGroupLabel(timestamp: string) {
+    const eventDate = new Date(timestamp);
+    const today = new Date();
+    const eventDay = new Date(eventDate.getFullYear(), eventDate.getMonth(), eventDate.getDate()).getTime();
+    const todayDay = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+    const elapsedDays = Math.round((todayDay - eventDay) / 86_400_000);
+    if (elapsedDays === 0) return "Today";
+    if (elapsedDays === 1) return "Yesterday";
+    return eventDate.toLocaleDateString(undefined, { day: "numeric", month: "long", year: eventDate.getFullYear() === today.getFullYear() ? undefined : "numeric" });
+  }
+
+  function formatActivityTime(timestamp: string) {
+    const elapsedMinutes = Math.max(0, Math.floor((Date.now() - Date.parse(timestamp)) / 60_000));
+    if (elapsedMinutes < 1) return "Just now";
+    if (elapsedMinutes < 60) return `${elapsedMinutes} ${elapsedMinutes === 1 ? "minute" : "minutes"} ago`;
+    const elapsedHours = Math.floor(elapsedMinutes / 60);
+    if (elapsedHours < 24) return `${elapsedHours} ${elapsedHours === 1 ? "hour" : "hours"} ago`;
+    return new Date(timestamp).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function shortActorName(actorName: string | null) {
+    return actorName?.trim().split(/\s+/)[0] || "System";
+  }
+
+  function renderActivityEventIcon(event: ActivityEvent) {
+    if (event.type.startsWith("ai.")) return <CommandIcon />;
+    if (event.type.startsWith("comment.") || event.type.startsWith("member.") || event.type.startsWith("invite.")) return <UsersIcon />;
+    if (event.type.startsWith("run.")) return <PlayIcon />;
+    if (event.type.startsWith("workspace.")) return <DashboardIcon />;
+    if (event.type.startsWith("document.") || event.type.startsWith("file.") || event.type.startsWith("git_import.")) return <FileIcon />;
+    return event.actorName ? event.actorName.slice(0, 1).toUpperCase() : "S";
+  }
+
   function buildCommandPaletteItems() {
     const query = commandPaletteQuery.trim().toLowerCase();
     const items: CommandPaletteItem[] = [];
 
     if (canEdit) {
-      items.push({ group: "Commands", icon: "note", id: "create-note", label: "Create note", meta: "Document", run: () => beginFileCreation("document", undefined, "new-note.md") });
-      items.push({ group: "Commands", icon: "code", id: "create-code", label: "Create code file", meta: "Document", run: () => beginFileCreation("document", undefined, "new-file.ts") });
-      items.push({ group: "Commands", icon: "canvas", id: "create-canvas", label: "Create canvas", meta: "Document", run: () => beginFileCreation("document", undefined, "new-canvas.canvas") });
+      items.push({ group: "Commands", icon: "note", id: "create-note", label: "Create note", meta: "Document", run: () => beginFileCreation("document", undefined, "new-note.md"), shortcut: "↵" });
+      items.push({ group: "Commands", icon: "code", id: "create-code", label: "Create code file", meta: "Document", run: () => beginFileCreation("document", undefined, "new-file.ts"), shortcut: "↵" });
+      items.push({ group: "Commands", icon: "canvas", id: "create-canvas", label: "Create canvas", meta: "Document", run: () => beginFileCreation("document", undefined, "new-canvas.canvas"), shortcut: "↵" });
     }
 
-    items.push({ disabled: !activeWorkspace, group: "Commands", icon: "invite", id: "invite", label: "Invite teammate", meta: "Workspace", run: inviteTeammates });
-    items.push({ group: "Commands", icon: "theme", id: "switch-theme", label: "Switch theme", meta: theme === "dark" ? "Light" : "Dark", run: toggleTheme });
-    items.push({ disabled: !activeTab || !canEdit || activeTab.type !== "code" || runState === "running", group: "Commands", icon: "run", id: "run-current-file", label: "Run current file", meta: activeTab?.title ?? "No file", run: () => void runActiveDocument() });
-    items.push({ disabled: !activeTab || activeTab.type !== "canvas" || !canEdit, group: "Commands", icon: "canvas", id: "toggle-canvas-snap", label: "Toggle snap", meta: activeTab?.type === "canvas" ? activeTab.title : "Canvas only", run: toggleActiveCanvasSnap });
+    const runDisabledReason = !activeTab ? "No file selected" : !canEdit ? "Editor access required" : activeTab.type !== "code" ? "Open a code file" : hasActiveRun || runState === "running" ? "A run is already active" : undefined;
+    const snapDisabledReason = !activeTab ? "No file selected" : !canEdit ? "Editor access required" : activeTab.type !== "canvas" ? "Open a canvas" : undefined;
+    items.push({ disabled: !activeWorkspace, disabledReason: "No workspace selected", group: "Commands", icon: "invite", id: "invite", label: "Invite teammate", meta: "Workspace", run: inviteTeammates, shortcut: "↵" });
+    items.push({ group: "Commands", icon: "theme", id: "switch-theme", label: "Switch theme", meta: theme === "dark" ? "Use light theme" : "Use dark theme", run: toggleTheme, shortcut: "↵" });
+    items.push({ disabled: Boolean(runDisabledReason), disabledReason: runDisabledReason, group: "Commands", icon: "run", id: "run-current-file", label: "Run current file", meta: activeTab?.title ?? "No file selected", run: () => void runActiveDocument(), shortcut: "↵" });
+    items.push({ disabled: Boolean(snapDisabledReason), disabledReason: snapDisabledReason, group: "Commands", icon: "canvas", id: "toggle-canvas-snap", label: "Toggle snap", meta: activeTab?.type === "canvas" ? activeTab.title : "Canvas only", run: toggleActiveCanvasSnap, shortcut: "↵" });
 
-    for (const document of documents) {
+    for (const document of [...documents].sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))) {
       const fileNode = fileNodes.find((node) => node.documentId === document.id) ?? null;
       const content = document.type === "canvas" ? getCanvasSearchText(document.canvasState) : document.content;
       const haystack = [document.title, fileNode?.name, content].filter(Boolean).join(" ").toLowerCase();
@@ -1417,11 +2532,16 @@ export function WorkspaceShell() {
         id: `open-${document.id}`,
         label: document.title,
         meta: fileNode ? fileNodePath(fileNode) : document.type,
-        run: () => selectDocument(document.id)
+        run: () => selectDocument(document.id),
+        shortcut: "↵"
       });
     }
 
-    if (!query) return items;
+    if (!query) {
+      const commands = items.filter((item) => item.group === "Commands");
+      const recentFiles = items.filter((item) => item.group === "Search").slice(0, 5);
+      return [...commands, ...recentFiles];
+    }
     return items.filter((item) => `${item.label} ${item.meta} ${item.group}`.toLowerCase().includes(query) || item.group === "Search");
   }
 
@@ -1442,10 +2562,80 @@ export function WorkspaceShell() {
     }));
   }
 
-  async function logout() {
-    await fetch("/api/auth/logout", { method: "POST" });
-    window.location.href = `/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`;
+  function openSettings(focusAccount: boolean) {
+    setSettingsFocusAccount(focusAccount);
+    setSettingsOpen(true);
   }
+
+  async function logout() {
+    setSettingsOpen(false);
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } finally {
+      window.location.href = `/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`;
+    }
+  }
+
+  const updateProfile = useCallback((user: WorkspacePayload["activeUser"]) => {
+    setPayload((current) => {
+      if (!current) return current;
+
+      const updateMember = (member: WorkspaceMember) => (
+        member.id === user.id ? { ...member, color: user.color, email: user.email, initials: user.initials, name: user.name } : member
+      );
+
+      return {
+        ...current,
+        activeUser: {
+          ...current.activeUser,
+          ...user
+        },
+        activeWorkspace: current.activeWorkspace ? {
+          ...current.activeWorkspace,
+          members: current.activeWorkspace.members.map(updateMember)
+        } : null,
+        workspaces: current.workspaces.map((workspace) => ({
+          ...workspace,
+          members: workspace.members.map(updateMember)
+        }))
+      };
+    });
+  }, []);
+
+  const updateWorkspaceSettings = useCallback((settings: WorkspaceSettings) => {
+    setPayload((current) => {
+      if (!current?.activeWorkspace) return current;
+
+      return {
+        ...current,
+        activeWorkspace: {
+          ...current.activeWorkspace,
+          settings
+        }
+      };
+    });
+  }, []);
+
+  const updateWorkspaceIdentity = useCallback((workspace: { abbreviation: string; id: string; name: string; slug: string }) => {
+    setPayload((current) => {
+      if (!current) return current;
+
+      return {
+        ...current,
+        activeWorkspace: current.activeWorkspace?.id === workspace.id ? {
+          ...current.activeWorkspace,
+          abbreviation: workspace.abbreviation,
+          name: workspace.name,
+          slug: workspace.slug
+        } : current.activeWorkspace,
+        workspaces: current.workspaces.map((currentWorkspace) => (
+          currentWorkspace.id === workspace.id
+            ? { ...currentWorkspace, abbreviation: workspace.abbreviation, name: workspace.name, slug: workspace.slug }
+            : currentWorkspace
+        ))
+      };
+    });
+  }, []);
 
   function renderFileCreationDraft(parentId: string | null, depth: number) {
     if (fileCreationDraft?.parentId !== parentId) return null;
@@ -1492,7 +2682,8 @@ export function WorkspaceShell() {
       const documentType = fileNode.kind === "folder" ? null : documentTypeForFileNode(fileNode);
       const activeDropMode = dropTargetFileNode?.fileNodeId === fileNode.id ? dropTargetFileNode.mode : null;
       const isDropTarget = Boolean(activeDropMode && canDropFileNode(draggedFileNodeId, fileNode, activeDropMode));
-      const label = fileNode.kind === "folder" ? (isExpanded ? "v" : ">") : ".";
+      const glyphClassName = fileNode.kind === "folder" ? (isExpanded ? "tree-node-glyph open" : "tree-node-glyph folder") : null;
+      const presenceUsers = fileNode.documentId ? documentPresenceById[fileNode.documentId] ?? [] : [];
 
       return (
         <div className="tree-node-group" key={fileNode.id}>
@@ -1576,9 +2767,16 @@ export function WorkspaceShell() {
               }}
               style={{ paddingLeft: 8 + depth * 14 }}
             >
-              <span>{label}</span>
+              {glyphClassName && <span className={glyphClassName} />}
               {fileNode.kind === "folder" ? <FolderIcon /> : renderDocumentTypeIcon(documentType)}
               <strong>{fileNode.name}</strong>
+              {presenceUsers.length > 0 && (
+                <span className="tree-node-presence" aria-label={`${presenceUsers.length} active collaborator${presenceUsers.length === 1 ? "" : "s"}`}>
+                  {presenceUsers.slice(0, 3).map((user) => (
+                    <i key={user.id} style={{ background: user.color }} title={`${user.name} is in this file`}>{user.initials}</i>
+                  ))}
+                </span>
+              )}
             </button>
           )}
           {fileNode.kind === "folder" && isExpanded && renderFileNodes(fileNode.id, depth + 1)}
@@ -1621,54 +2819,105 @@ export function WorkspaceShell() {
   const contextParentId = contextFileNode?.kind === "folder" ? contextFileNode.id : contextFileNode?.parentId ?? null;
   const commandPaletteItems = buildCommandPaletteItems();
   const enabledCommandPaletteItems = commandPaletteItems.filter((item) => !item.disabled);
-  const terminalLines = selectedRun?.output ? selectedRun.output.split(/\r?\n/) : outputLines;
-  const panelTabs: PanelTab[] = activeTab?.type === "code" ? ["Output", "Activity", "Comments", "AI"] : ["Activity", "Comments", "AI"];
+  const commandPaletteHasQuery = commandPaletteQuery.trim().length > 0;
+  const commandPaletteCommands = commandPaletteItems.filter((item) => item.group === "Commands" && !item.disabled);
+  const commandPaletteRecentFiles = commandPaletteItems.filter((item) => item.group === "Search");
+  const commandPaletteUnavailable = commandPaletteItems.filter((item) => item.group === "Commands" && item.disabled);
+  const terminalLines = selectedRun ? runTerminalLines(selectedRun) : outputLines;
+  const latestRunStatus = selectedRun?.status ?? runBadge;
+  const latestRunDuration = selectedRun ? formatRunDuration(selectedRun) : null;
+  const panelTabs: PanelTab[] = activeTab && workspaceView === "files"
+    ? activeTab.type === "code" ? ["Output", "Activity", "Comments"] : ["Activity", "Comments"]
+    : ["Activity"];
   const selectedPanel = panelTabs.includes(activePanel) ? activePanel : panelTabs[0];
   const canSwitchWorkspace = (payload?.workspaces.length ?? 0) > 1;
 
   return (
-    <main className="workspace-shell" data-theme={theme}>
-      <aside className="workspace-sidebar">
-        <div className="workspace-brand-row">
-          <BrandMark href="/" />
-          <button className="workspace-switcher" disabled={!canSwitchWorkspace} onClick={() => setWorkspaceSwitcherOpen((open) => canSwitchWorkspace ? !open : false)} title={canSwitchWorkspace ? "Switch workspace" : "No other workspaces available"} type="button">
-            {activeWorkspace?.slug ?? "Switch workspace"}
-          </button>
-          {workspaceSwitcherOpen && canSwitchWorkspace && (
-            <div className="workspace-switcher-menu">
-              {payload?.workspaces.map((workspace) => (
-                <button className={workspace.id === activeWorkspace?.id ? "active" : ""} key={workspace.id} onClick={() => { selectWorkspace(workspace.id); setWorkspaceSwitcherOpen(false); }}>
-                  <span>{workspace.name}</span>
-                  <small>{workspace.documentCount} docs</small>
-                </button>
-              ))}
-            </div>
-          )}
+    <main className={sidebarCollapsed ? "workspace-shell workspace-sidebar-collapsed" : "workspace-shell"} data-theme={theme}>
+      <aside className={mobileSidebarOpen ? "workspace-sidebar mobile-open" : "workspace-sidebar"}>
+        <div className="workspace-sidebar-top">
+          <div className="workspace-switcher" data-open={workspaceSwitcherOpen ? "true" : "false"} ref={workspaceSwitcherRef}>
+            <button aria-expanded={workspaceSwitcherOpen} aria-haspopup="menu" aria-label={workspaceSwitcherOpen ? "Close workspace switcher" : "Open workspace switcher"} className="workspace-identity-card" disabled={!activeWorkspace} onClick={() => setWorkspaceSwitcherOpen((open) => activeWorkspace ? !open : false)} title={workspaceSwitcherOpen ? undefined : canSwitchWorkspace ? "Switch workspace" : "Current workspace"} type="button">
+              <span className="workspace-identity-mark">{(activeWorkspace?.abbreviation ?? "S").slice(0, 2).toUpperCase()}</span>
+              <span className="workspace-identity-copy">
+                <strong>{activeWorkspace?.name ?? "Slate"}</strong>
+                <small>{payload?.activeUser.email ?? activeWorkspace?.abbreviation ?? "workspace"}</small>
+              </span>
+              <span className={workspaceSwitcherOpen ? "workspace-identity-chevron open" : "workspace-identity-chevron"} />
+            </button>
+            {workspaceSwitcherOpen && activeWorkspace && (
+              <div className="workspace-switcher-menu" role="menu">
+                <div className="workspace-switcher-list">
+                  {payload?.workspaces.map((workspace) => {
+                    const active = workspace.id === activeWorkspace.id;
+                    return (
+                      <button aria-current={active ? "true" : undefined} className={active ? "active" : ""} key={workspace.id} onClick={() => { selectWorkspace(workspace.id); setWorkspaceSwitcherOpen(false); }} role="menuitem" type="button">
+                        <span className="workspace-switcher-option-copy"><strong>{workspace.name}</strong><small>{workspace.documentCount} docs</small></span>
+                        {active && <span aria-hidden="true" className="workspace-switcher-check">✓</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="workspace-switcher-footer">
+                  <button disabled={workspaceCreating} onClick={() => { setWorkspaceCreateOpen(true); setWorkspaceSwitcherOpen(false); setWorkspaceCreateError(null); }} role="menuitem" type="button">
+                    <span aria-hidden="true" className="workspace-switcher-create-icon">+</span>
+                    <strong>{workspaceCreating ? "Creating workspace" : "Create workspace"}</strong>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="workspace-nav-section">
+            <span className="workspace-nav-label">Workspace</span>
+            <nav className="workspace-nav">
+              <button className={workspaceView === "dashboard" ? "active" : ""} onClick={() => setWorkspaceView("dashboard")} type="button">
+                <DashboardIcon />
+                <span>Dashboard</span>
+              </button>
+              <button className={workspaceView === "activity" ? "active" : ""} onClick={() => setWorkspaceView("activity")} type="button">
+                <ActivityIcon />
+                <span>Activity</span>
+              </button>
+              <button className={workspaceView === "comments" ? "active" : ""} onClick={() => setWorkspaceView("comments")} type="button">
+                <CommentIcon />
+                <span>Comments</span>
+                <small>{activeDocumentComments.length}</small>
+              </button>
+            </nav>
+          </div>
+          <div className="workspace-nav-section">
+            <span className="workspace-nav-label">Tools</span>
+            <nav className="workspace-nav">
+              <button onClick={openCommandPalette} type="button">
+                <CommandIcon />
+                <span>Command</span>
+              </button>
+              <button className={workspaceView === "ai" ? "active" : ""} disabled={!activeWorkspaceIsSettled} onClick={() => { setWorkspaceView("ai"); setSidePanelCollapsed(true); }} type="button">
+                <AiIcon />
+                <span>AI Assistant</span>
+              </button>
+            </nav>
+          </div>
         </div>
         <section className="sidebar-section file-section">
           <div className="explorer-header">
+            <p>Files <small>{fileNodes.length}</small></p>
             <div className="explorer-actions">
-              <div className="sidebar-document-create">
-                <button aria-label="Create document" disabled={!activeWorkspace || !canEdit} onClick={toggleCreationMenu} ref={createDocumentButtonRef} title="Create document">
-                  <FilePlusIcon />
-                </button>
+              <div className="sidebar-create-control">
+                <button aria-expanded={creationMenuOpen} aria-haspopup="menu" aria-label="Create file or folder" disabled={!activeWorkspace || !canEdit} onClick={toggleCreationMenu} ref={createDocumentButtonRef} title="New" type="button"><PlusIcon /></button>
                 {creationMenuOpen && (
-                  <div className="create-menu" style={{ left: creationMenuPosition.left, top: creationMenuPosition.top }}>
+                  <div className="create-menu" role="menu">
                     <button aria-label="Create code tab" disabled={!canEdit} onClick={() => beginFileCreation("document", undefined, "new-file.ts")}><CodeIcon />Code file</button>
                     <button aria-label="Create note tab" disabled={!canEdit} onClick={() => beginFileCreation("document", undefined, "new-note.md")}><NoteIcon />Note</button>
                     <button aria-label="Create canvas tab" disabled={!canEdit} onClick={() => beginFileCreation("document", undefined, "new-canvas.canvas")}><CanvasIcon />Canvas</button>
+                    <button aria-label="Create folder" disabled={!canEdit || fileTreePending} onClick={() => beginFileCreation("folder")}><FolderPlusIcon />Folder</button>
                   </div>
                 )}
               </div>
-              <button aria-label="New folder" disabled={!activeWorkspace || !canEdit || fileTreePending} onClick={() => beginFileCreation("folder")} title="New folder">
-                <FolderPlusIcon />
-              </button>
-              <button aria-label="Refresh files" disabled={!activeWorkspace} onClick={() => activeWorkspace ? void loadWorkspace(activeWorkspace.id) : undefined} title="Refresh">
+              <button aria-label="Refresh files" disabled={!activeWorkspace} onClick={() => activeWorkspace ? void loadWorkspace(activeWorkspace.id) : undefined} title="Refresh files" type="button">
                 <RefreshIcon />
               </button>
-              <button aria-label="Collapse folders" disabled={expandedFolderIds.size === 0} onClick={() => setExpandedFolderIds(new Set())} title="Collapse all">
-                <CollapseIcon />
-              </button>
+              <button aria-label="Hide sidebar" onClick={() => { if (window.matchMedia("(max-width: 960px)").matches) setMobileSidebarOpen(false); else setSidebarCollapsed(true); setCreationMenuOpen(false); setWorkspaceSwitcherOpen(false); }} title="Hide sidebar" type="button"><SortIcon /></button>
             </div>
           </div>
           {fileNodes.length === 0 && !fileCreationDraft ? (
@@ -1680,25 +2929,44 @@ export function WorkspaceShell() {
           )}
           {fileTreeError && <strong className="file-tree-error file-tree-inline-error">{fileTreeError}</strong>}
         </section>
+        <aside className="workspace-beta-card" aria-label="Slate beta testing">
+          <span>Beta</span>
+          <a href="mailto:feedback@slate.dev?subject=Slate%20beta%20feedback">Feedback</a>
+        </aside>
         {payload?.activeUser && (
-          <button
-            className="workspace-user"
-            onContextMenu={(event) => {
-              event.preventDefault();
-              setAccountContextMenu({ x: event.clientX, y: event.clientY });
-              setFileContextMenu(null);
-            }}
-          >
-            <span className={`avatar avatar-${payload.activeUser.color}`}>{payload.activeUser.initials}</span>
-            <div>
-              <strong>{payload.activeUser.name}</strong>
-              <small>{payload.activeUser.email}</small>
+          <div className="workspace-account">
+            <div className="workspace-footer-actions">
+              <button onClick={() => openSettings(false)} type="button">
+                <SettingsIcon />
+                <span>Settings</span>
+              </button>
+              <button onClick={() => window.location.assign("mailto:support@slate.dev?subject=Slate%20support")} type="button">
+                <SupportIcon />
+                <span>Help &amp; support</span>
+              </button>
             </div>
-          </button>
+            <button
+              aria-label="Open profile and account settings"
+              className="workspace-user"
+              onClick={() => openSettings(true)}
+              type="button"
+            >
+              <span className={`avatar avatar-${payload.activeUser.color}`}>{payload.activeUser.initials}</span>
+              <div>
+                <strong>{payload.activeUser.name}</strong>
+                <small>{payload.activeUser.email}</small>
+              </div>
+            </button>
+          </div>
         )}
       </aside>
+      {mobileSidebarOpen && <button aria-label="Close navigation" className="workspace-sidebar-backdrop" onClick={() => setMobileSidebarOpen(false)} type="button" />}
 
       <header className="workspace-topbar">
+        {sidebarCollapsed && <button aria-label="Show sidebar" className="workspace-sidebar-restore" onClick={() => setSidebarCollapsed(false)} title="Show sidebar" type="button"><SortIcon /></button>}
+        <button aria-expanded={mobileSidebarOpen} aria-label="Toggle navigation" className="workspace-mobile-nav-toggle" onClick={() => setMobileSidebarOpen((open) => !open)} type="button">
+          <CollapseIcon />
+        </button>
         <div className="breadcrumbs">
           {activeTab && (
             <span className={`breadcrumb-document-icon document-type-${activeTab.type}`}>
@@ -1712,125 +2980,68 @@ export function WorkspaceShell() {
             </span>
           ))}
         </div>
-        <DocumentHistoryPanel canEdit={canEdit} documentId={activeTab?.id ?? null} onRestore={applyRestoredDocument} />
+        {workspaceView === "files" && <DocumentHistoryPanel canEdit={canEdit} documentId={activeTab?.id ?? null} onRestore={applyRestoredDocument} />}
         <div className="topbar-spacer" />
-        <div className="users-wrap">
-          <button className="presence-stack" disabled={!activeWorkspace} onClick={() => { setUsersOpen((open) => !open); setShareOpen(false); }}>
-            {activeWorkspace?.members.map((member) => (
-              <span className={`avatar avatar-${member.color}`} title={`${member.name} · ${member.role}`} key={member.id}>
-                {member.initials}
-              </span>
-            ))}
-          </button>
-          {usersOpen && (
-            <div className="users-menu">
-              <strong>People</strong>
-              <small>{activeWorkspace?.members.length ?? 0} in workspace</small>
-              {activeWorkspace?.members.map((member) => (
-                <div className="user-member" key={member.id}>
-                  <span className={`avatar avatar-${member.color}`}>{member.initials}</span>
-                  <div>
-                    <b>{member.name}</b>
-                    <small>{member.email}</small>
-                  </div>
-                  <select aria-label={`${member.name} role`} disabled={!canManageMembers || memberActionPendingId === member.id} onChange={(event) => void updateMemberRole(member.id, event.target.value as WorkspaceRole)} value={member.role}>
-                    <option value="owner">Owner</option>
-                    <option value="editor">Editor</option>
-                    <option value="viewer">Viewer</option>
-                  </select>
-                  <button className="danger-control" disabled={!canManageMembers || member.id === payload?.activeUser.id || memberActionPendingId === member.id} onClick={() => void removeMember(member)}>
-                    Remove
-                  </button>
-                </div>
-              ))}
-              {memberActionError && <strong className="member-action-error">{memberActionError}</strong>}
-              {!canManageMembers && <p>Only workspace owners can change roles.</p>}
+        <div className="topbar-actions">
+          {workspaceView !== "dashboard" && (
+            <div className="workspace-header-status" aria-label="Workspace status">
+              {workspaceView === "files" && activeTab?.type === "canvas" && <span className={`connection-pill ${syncState === "saving" ? "connection-saving" : syncState === "offline" || syncState === "blocked" ? "connection-offline" : ""}`} title={statusDetail}><i />{statusText.toLowerCase()}</span>}
+              <span className={`connection-pill realtime-${realtimeState} ${isRealtimeRecovering(realtimeState) ? "workspace-status-warning" : ""}`} title={realtimeStatusDetail}><i />{realtimeStatusText.toLowerCase()}</span>
+              {workspaceView === "files" && activeTab?.type !== "canvas" && <span className={`connection-pill ${syncState === "saving" ? "connection-saving" : syncState === "offline" || syncState === "blocked" ? "connection-offline" : ""}`} title={statusDetail}><i />{statusText.toLowerCase()}</span>}
             </div>
           )}
-        </div>
-        <div className="share-wrap">
-          <button aria-label="Share" className="icon-control" disabled={!activeWorkspace} onClick={() => { setShareOpen((open) => !open); setUsersOpen(false); }} title={shareCopied ? "Link copied" : "Share"}>
-            <ShareIcon />
-          </button>
-          {shareOpen && (
-            <div className="share-menu">
-              <strong>Share workspace</strong>
-              <p>{canInvite ? "Create an invite link and keep roles explicit." : "Only workspace owners can invite teammates."}</p>
-              {canInvite && (
-                <div className="invite-form">
-                  <input aria-label="Invite email" onChange={(event) => setInviteEmail(event.target.value)} placeholder="teammate@company.com" type="email" value={inviteEmail} />
-                  <div className="role-grid">
-                    <button className={inviteRole === "viewer" ? "active" : ""} onClick={() => setInviteRole("viewer")}>Viewer</button>
-                    <button className={inviteRole === "editor" ? "active" : ""} onClick={() => setInviteRole("editor")}>Editor</button>
-                  </div>
-                  <button className="primary-control" disabled={inviteSubmitting} onClick={createInvite}>
-                    {inviteSubmitting ? "Creating..." : "Create invite link"}
-                  </button>
-                  {inviteLink && (
-                    <button className="light-control invite-link-control" onClick={() => copyInvite()}>
-                      {shareCopied ? "Copied" : "Copy latest link"}
+          {workspaceView === "files" && activeTab?.type === "code" && (
+            <div className="environment-selector" data-open={executionEnvironmentOpen ? "true" : "false"} ref={executionEnvironmentRef}>
+              <button aria-expanded={executionEnvironmentOpen} aria-haspopup="listbox" disabled={!canEdit || hasActiveRun || runState === "running"} onClick={() => setExecutionEnvironmentOpen((open) => !open)} type="button">
+                <span>{selectedExecutionEnvironment.label}</span>
+              </button>
+              {executionEnvironmentOpen && (
+                <div className="environment-selector-menu" role="listbox">
+                  {executionEnvironments.map((environment) => (
+                    <button aria-selected={environment.id === selectedExecutionEnvironmentId} className={environment.id === selectedExecutionEnvironmentId ? "active" : ""} key={environment.id} onClick={() => { setSelectedExecutionEnvironmentId(environment.id); setExecutionEnvironmentOpen(false); }} role="option" type="button">
+                      <span>{environment.label}</span>
                     </button>
-                  )}
-                  {inviteError && <strong className="auth-error">{inviteError}</strong>}
-                </div>
-              )}
-              {activeWorkspace && activeWorkspace.invites.length > 0 && (
-                <div className="pending-invites">
-                  <span>Invites</span>
-                  {activeWorkspace.invites.map((invite) => (
-                    <div className="pending-invite" key={invite.id}>
-                      <b>{invite.email ?? "Link invite"}</b>
-                      <small>
-                        {invite.acceptedAt
-                          ? `${invite.role} · accepted ${new Date(invite.acceptedAt).toLocaleDateString()}`
-                          : `${invite.role} · expires ${new Date(invite.expiresAt).toLocaleDateString()}`}
-                      </small>
-                      {!invite.acceptedAt && (
-                        <button className="danger-control" disabled={inviteActionPendingId === invite.id} onClick={() => void revokeInvite(invite.id)}>
-                          {inviteActionPendingId === invite.id ? "Revoking" : "Revoke"}
-                        </button>
-                      )}
-                    </div>
                   ))}
                 </div>
               )}
-              <form className="git-import-form share-import-form" onSubmit={(event) => { event.preventDefault(); void importGitRepository(); }}>
-                <span>Import Git</span>
-                <input aria-label="GitHub repository URL" disabled={!canEdit || gitImportPending} onChange={(event) => setGitImportUrl(event.target.value)} placeholder="https://github.com/owner/repo" spellCheck={false} value={gitImportUrl} />
-                <button disabled={!canEdit || gitImportPending || gitImportUrl.trim().length === 0} type="submit">
-                  {gitImportPending ? "Importing" : "Import Git"}
-                </button>
-                {gitImportError && <strong>{gitImportError}</strong>}
-                {gitImportSummary && <small>{gitImportSummary}</small>}
-              </form>
             </div>
           )}
-        </div>
-        {shouldAllowPanel && (
-          <button aria-label={sidePanelCollapsed ? "Show right sidebar" : "Hide right sidebar"} className="icon-control panel-topbar-toggle" onClick={() => setSidePanelCollapsed((collapsed) => !collapsed)} title={sidePanelCollapsed ? "Show panel" : "Hide panel"} type="button">
-            {sidePanelCollapsed ? <PanelShowIcon /> : <PanelHideIcon />}
+          {workspaceView === "files" && activeTab?.type === "code" && (
+          <button className="run-control" disabled={!activeTab || !canEdit || hasActiveRun || runState === "running" || activeTab.type !== "code"} onClick={runActiveDocument}>
+            <PlayIcon />
+            {hasActiveRun || runState === "running" ? "Running" : "Run"}
           </button>
-        )}
-        <button aria-label="Command palette" className="icon-control" onClick={openCommandPalette} title="Command">
-          <CommandIcon />
-        </button>
-        {activeTab?.type === "code" && (
-        <select className="environment-selector" disabled={!canEdit || runState === "running"} onChange={(event) => setSelectedExecutionEnvironmentId(event.target.value as ExecutionEnvironmentId)} value={selectedExecutionEnvironmentId} aria-label="Execution environment">
-          {executionEnvironments.map((environment) => (
-            <option key={environment.id} value={environment.id}>{environment.label}</option>
-          ))}
-        </select>
-        )}
-        {activeTab?.type === "code" && (
-        <button className="run-control" disabled={!activeTab || !canEdit || runState === "running" || activeTab.type !== "code"} onClick={runActiveDocument}>
-          <PlayIcon />
-          {runState === "running" ? "Queueing" : "Run"}
-        </button>
-        )}
+          )}
+          {activeWorkspaceIsSettled && (
+            <button className={workspaceView === "ai" ? "ai-panel-toggle active" : "ai-panel-toggle"} onClick={() => { setWorkspaceView("ai"); setSidePanelCollapsed(true); }} title="Open Slate Assistant" type="button">
+              <AiIcon />
+              <span>AI</span>
+            </button>
+          )}
+        </div>
       </header>
 
-      <section className={`${shouldShowPanel ? "workspace-main" : "workspace-main workspace-main-collapsed"}${shouldUseCanvasWorkbench ? " workspace-main-canvas" : ""}`}>
-        {!activeWorkspace || !activeTab ? (
+      <section className={`${shouldShowPanel ? "workspace-main" : "workspace-main workspace-main-collapsed"}${shouldUseCanvasWorkbench ? " workspace-main-canvas" : ""}${workspaceView === "ai" ? " workspace-main-ai" : ""}`}>
+        {workspaceView === "dashboard" ? (
+          renderWorkspaceDashboard()
+        ) : workspaceView === "activity" ? (
+          renderWorkspaceActivity()
+        ) : workspaceView === "comments" ? (
+          renderWorkspaceComments()
+        ) : workspaceView === "ai" && activeWorkspace ? (
+          <section aria-label="AI Assistant" className="workspace-ai-page">
+            <WorkspaceAiPanel
+              activeDocument={activeTab ? { id: activeTab.id, title: activeTab.title, updatedAt: activeTab.updatedAt } : null}
+              canApply={canEdit}
+              key={activeWorkspace.id}
+              onBeforeApply={prepareAiContext}
+              onBeforeSend={prepareAiContext}
+              onWorkspaceChange={applyAiWorkspaceChange}
+              workspaceId={activeWorkspace.id}
+              workspaceName={activeWorkspace.name}
+            />
+          </section>
+        ) : !activeWorkspace || !activeTab ? (
           <section className="workspace-start">
             <div className="workspace-start-copy">
               <span>{activeWorkspace ? "Start anywhere" : "Slate workspace"}</span>
@@ -1838,8 +3049,8 @@ export function WorkspaceShell() {
               <p>{activeWorkspace ? "Pick the first surface. Runs, comments, history, and teammates will stay attached as the work moves between modes." : "A workspace gives Slate one place to keep source, decisions, sketches, invites, and execution history."}</p>
               {!activeWorkspace && (
                 <div className="empty-actions">
-                  <button className="primary-control" disabled={workspaceCreating} onClick={() => void createWorkspace()}>
-                    {workspaceCreating ? "Creating" : "Create workspace"}
+                  <button className="primary-control" disabled={workspaceCreating} onClick={() => { setWorkspaceCreateOpen(true); setWorkspaceCreateError(null); }} type="button">
+                    Create workspace
                   </button>
                   {workspaceCreateError && <strong className="workspace-create-error">{workspaceCreateError}</strong>}
                 </div>
@@ -1861,31 +3072,34 @@ export function WorkspaceShell() {
             )}
           </section>
         ) : (
-          <section className="workbench-surface">
-            <div className="document-tabbar">
-              <div className="document-tabs">
-                {openedDocuments.map((document) => (
-                  <div className={`${document.id === activeTab.id ? "document-tab active" : "document-tab"} document-type-${document.type}`} key={document.id}>
-                    <button className="document-tab-main" onClick={() => selectDocument(document.id)} type="button">
-                      <span className="document-tab-icon">
-                        {renderDocumentTypeIcon(document.type)}
-                      </span>
-                      <strong>{document.title}</strong>
-                    </button>
-                    <button aria-label={`Close ${document.title}`} className="document-tab-close" onClick={() => closeDocumentTab(document.id)} type="button">×</button>
-                  </div>
-                ))}
+          <section className={openedDocuments.length > 1 ? "workbench-surface" : "workbench-surface single-document"}>
+            {openedDocuments.length > 1 && (
+              <div className="document-tabbar">
+                <div className="document-tabs">
+                  {openedDocuments.map((document) => (
+                    <div className={`${document.id === activeTab.id ? "document-tab active" : "document-tab"} document-type-${document.type}`} key={document.id}>
+                      <button className="document-tab-main" onClick={() => selectDocument(document.id)} type="button">
+                        <span className="document-tab-icon">
+                          {renderDocumentTypeIcon(document.type)}
+                        </span>
+                        <strong>{document.title}</strong>
+                      </button>
+                      <button aria-label={`Close ${document.title}`} className="document-tab-close" onClick={() => closeDocumentTab(document.id)} type="button">×</button>
+                    </div>
+                  ))}
+                </div>
+                <button aria-label="New code file" className="document-tabbar-add" disabled={!canEdit} onClick={() => beginFileCreation("document", undefined, "new-file.ts")} title="New code file" type="button">+</button>
               </div>
-            </div>
+            )}
             <div className="document-stage">
               {activeTab.type === "code" && (
-                <CollaborativeEditor documentId={activeTab.id} fileName={activeTab.title} initialValue={activeTab.content} language={activeTab.language ?? "plaintext"} onContentChange={(content) => saveDocument(activeTab.id, { content })} onPresenceChange={ignoreDocumentPresence} onRealtimeStatusChange={handleRealtimeStatusChange} readOnly={!canEdit} roomName={activeWorkspace.id} theme={theme} user={{ color: awarenessColors[payload?.activeUser.color ?? "blue"] ?? awarenessColors.blue, id: payload?.activeUser.id ?? "local", initials: payload?.activeUser.initials ?? "ME", name: payload?.activeUser.name ?? "You", role: activeMember?.role ?? "viewer" }} />
+                <CollaborativeEditor documentId={activeTab.id} fileName={activeTab.title} initialValue={activeTab.content} language={activeTab.language ?? "plaintext"} onCommentSelectionChange={handleEditorCommentSelectionChange} onContentChange={(content) => saveDocument(activeTab.id, { content })} onPresenceChange={(users) => updateDocumentPresence(activeTab.id, users)} onRealtimeStatusChange={handleRealtimeStatusChange} readOnly={!canEdit} registerDocumentFlush={registerDocumentFlush} roomName={activeWorkspace.id} theme={theme} user={{ color: awarenessColors[payload?.activeUser.color ?? "blue"] ?? awarenessColors.blue, id: payload?.activeUser.id ?? "local", initials: payload?.activeUser.initials ?? "ME", name: payload?.activeUser.name ?? "You", role: activeMember?.role ?? "viewer" }} />
               )}
               {activeTab.type === "note" && (
-                <CollaborativeNote documentId={activeTab.id} initialValue={activeTab.content} onContentChange={(content) => saveDocument(activeTab.id, { content })} onPresenceChange={ignoreDocumentPresence} onRealtimeStatusChange={handleRealtimeStatusChange} readOnly={!canEdit} roomName={activeWorkspace.id} title={activeTab.title} user={{ color: awarenessColors[payload?.activeUser.color ?? "blue"] ?? awarenessColors.blue, id: payload?.activeUser.id ?? "local", initials: payload?.activeUser.initials ?? "ME", name: payload?.activeUser.name ?? "You", role: activeMember?.role ?? "viewer" }} />
+                <CollaborativeNote documentId={activeTab.id} initialValue={activeTab.content} onContentChange={(content) => saveDocument(activeTab.id, { content })} onPresenceChange={(users) => updateDocumentPresence(activeTab.id, users)} onRealtimeStatusChange={handleRealtimeStatusChange} readOnly={!canEdit} registerDocumentFlush={registerDocumentFlush} roomName={activeWorkspace.id} title={activeTab.title} user={{ color: awarenessColors[payload?.activeUser.color ?? "blue"] ?? awarenessColors.blue, id: payload?.activeUser.id ?? "local", initials: payload?.activeUser.initials ?? "ME", name: payload?.activeUser.name ?? "You", role: activeMember?.role ?? "viewer" }} />
               )}
               {activeTab.type === "canvas" && (
-                <CollaborativeCanvas canvasId={activeTab.id} initialState={activeTab.canvasState} onPresenceChange={ignoreDocumentPresence} onRealtimeStatusChange={handleRealtimeStatusChange} onStateChange={(canvasState) => saveDocument(activeTab.id, { canvasState })} readOnly={!canEdit} roomName={activeWorkspace.id} theme={theme} title={activeTab.title} user={{ color: awarenessColors[payload?.activeUser.color ?? "blue"] ?? awarenessColors.blue, id: payload?.activeUser.id ?? "local", initials: payload?.activeUser.initials ?? "ME", name: payload?.activeUser.name ?? "You", role: activeMember?.role ?? "viewer" }} />
+                <CollaborativeCanvas canvasId={activeTab.id} initialState={activeTab.canvasState} onCommentSelectionChange={handleCanvasCommentSelectionChange} onLocalSaveBlockedChange={handleCanvasLocalSaveBlockedChange} onPresenceChange={(users) => updateDocumentPresence(activeTab.id, users)} onRealtimeStatusChange={handleRealtimeStatusChange} onStateChange={(documentId, canvasState) => saveDocument(documentId, { canvasState })} readOnly={!canEdit} registerDocumentFlush={registerDocumentFlush} roomName={activeWorkspace.id} saveValidationError={documentValidationErrors[activeTab.id] ?? null} theme={theme} title={activeTab.title} user={{ color: awarenessColors[payload?.activeUser.color ?? "blue"] ?? awarenessColors.blue, id: payload?.activeUser.id ?? "local", initials: payload?.activeUser.initials ?? "ME", name: payload?.activeUser.name ?? "You", role: activeMember?.role ?? "viewer" }} />
               )}
             </div>
           </section>
@@ -1898,16 +3112,20 @@ export function WorkspaceShell() {
                 {tab}
               </button>
             ))}
-            <button aria-label="Hide right sidebar" className="panel-collapse-toggle" onClick={() => setSidePanelCollapsed(true)} title="Hide panel" type="button">
-              <PanelHideIcon />
+            <button aria-label="Collapse side panel" className="panel-collapse-toggle" onClick={() => setSidePanelCollapsed(true)} title="Collapse panel" type="button">
+              <CollapseIcon />
             </button>
           </div>
           {selectedPanel === "Output" && (
             <div className="output-panel">
               <div className="output-header">
-                <span>{selectedRun ? selectedRun.kind : selectedExecutionEnvironmentId}</span>
-                <b className={`run-badge run-badge-${runBadgeClass(selectedRun?.status ?? runState)}`}>{selectedRun?.status ?? runBadge}</b>
-                <button onClick={() => { setOutputLines([]); setSelectedRunId(null); setRunState("idle"); }}>Clear</button>
+                <div>
+                  <span>{selectedRun ? selectedRun.kind : selectedExecutionEnvironmentId}</span>
+                  {latestRunDuration && <small>{latestRunDuration}</small>}
+                </div>
+                <b className={`run-badge run-badge-${runBadgeClass(latestRunStatus)}`}>{latestRunStatus}</b>
+                <button disabled={!activeTab || !canEdit || hasActiveRun || runState === "running"} onClick={runActiveDocument} type="button">Rerun</button>
+                <button onClick={() => { setOutputLines([]); setSelectedRunId(null); setRunState("idle"); }} type="button">Clear</button>
               </div>
               <div className="terminal">
                 {terminalLines.length === 0 ? (
@@ -1916,6 +3134,19 @@ export function WorkspaceShell() {
                   terminalLines.map((line, index) => <p key={`${line}-${index}`}>{line}</p>)
                 )}
               </div>
+              {activeDocumentRuns.length > 0 && (
+                <div className="run-history">
+                  {activeDocumentRuns.slice(0, 6).map((run) => (
+                    <button className={run.id === selectedRun?.id ? "active" : ""} key={run.id} onClick={() => { setSelectedRunId(run.id); setOutputLines([]); setRunState(run.status === "failed" ? "failed" : run.status === "completed" ? "done" : "running"); }} type="button">
+                      <span>
+                        <strong>{run.kind}</strong>
+                        <small>{new Date(run.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · {formatRunDuration(run)}</small>
+                      </span>
+                      <b className={`run-badge run-badge-${runBadgeClass(run.status)}`}>{run.status}</b>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
           {selectedPanel === "Activity" && (
@@ -1944,54 +3175,18 @@ export function WorkspaceShell() {
           )}
           {selectedPanel === "Comments" && (
             <div className="comments-panel">
-              {canEdit && (
-                <form className="comment-form" onSubmit={(event) => { event.preventDefault(); void createComment(); }}>
-                  <textarea aria-label="New comment" onChange={(event) => setCommentDraft(event.target.value)} placeholder="Add a comment" value={commentDraft} />
-                  <button disabled={commentPending || commentDraft.trim().length === 0} type="submit">{commentPending ? "Adding" : "Add comment"}</button>
-                </form>
-              )}
+              {renderCommentFilters()}
+              {renderCommentComposer()}
               {commentError && <strong className="panel-error">{commentError}</strong>}
-              {comments.length === 0 ? (
-                <div className="comment-empty">No comments on this document.</div>
-              ) : (
-                comments.map((comment) => (
-                  <article className={comment.resolvedAt ? "comment-item resolved" : "comment-item"} key={comment.id}>
-                    <div className="comment-meta">
-                      <span className="avatar avatar-gray">{comment.authorName.slice(0, 1).toUpperCase()}</span>
-                      <div>
-                        <strong>{comment.authorName}</strong>
-                        <small>{new Date(comment.createdAt).toLocaleString()}</small>
-                      </div>
-                    </div>
-                    <p>{comment.body}</p>
-                    {canEdit && (
-                      <button disabled={commentActionPendingId === comment.id} onClick={() => void setCommentResolved(comment.id, !comment.resolvedAt)}>
-                        {comment.resolvedAt ? "Reopen" : "Resolve"}
-                      </button>
-                    )}
-                  </article>
-                ))
-              )}
-              {comments.length > 0 && <div className="comment-end">No more comments</div>}
-            </div>
-          )}
-          {selectedPanel === "AI" && (
-            <div className="ai-panel">
-              <div>AI</div>
-              <h2>Room-aware assistant</h2>
-              <p>It will use persisted documents, canvas snapshots, and run history once the assistant service is connected.</p>
+              <div className={filteredComments.length === 0 ? "comment-thread empty" : "comment-thread"}>
+                {filteredComments.map(renderCommentItem)}
+                {filteredComments.length === 0 && renderCommentEmptyState()}
+              </div>
             </div>
           )}
         </aside>
         )}
       </section>
-
-      <footer className="workspace-status">
-        <span title={statusDetail}><i /> {statusText.toLowerCase()}</span>
-        <span className={isRealtimeRecovering(realtimeState) ? "workspace-status-warning" : ""} title={realtimeStatusDetail}><i /> {realtimeStatusText.toLowerCase()}</span>
-        <span>{documents.length} documents</span>
-        <span>{activeMember?.role ?? "guest"}</span>
-      </footer>
       {commandPaletteOpen && (
         <div className="command-overlay" onClick={() => setCommandPaletteOpen(false)}>
           <div
@@ -2000,7 +3195,7 @@ export function WorkspaceShell() {
             onKeyDown={(event) => {
               if (event.key === "ArrowDown") {
                 event.preventDefault();
-                setCommandPaletteSelectedIndex((index) => Math.min(enabledCommandPaletteItems.length - 1, index + 1));
+                setCommandPaletteSelectedIndex((index) => enabledCommandPaletteItems.length === 0 ? 0 : Math.min(enabledCommandPaletteItems.length - 1, index + 1));
               }
 
               if (event.key === "ArrowUp") {
@@ -2015,7 +3210,7 @@ export function WorkspaceShell() {
             }}
           >
             <div className="command-search">
-              <CommandIcon />
+              <SearchIcon />
               <input
                 aria-label="Search commands and workspace"
                 autoFocus
@@ -2026,24 +3221,47 @@ export function WorkspaceShell() {
                 placeholder="Search files, content, or commands"
                 value={commandPaletteQuery}
               />
+              <kbd>⌘ K</kbd>
             </div>
-            {commandPaletteItems.length === 0 ? (
-              <div className="command-empty">No results</div>
-            ) : (
-              commandPaletteItems.map((item) => {
-                const enabledIndex = enabledCommandPaletteItems.findIndex((enabledItem) => enabledItem.id === item.id);
-                const active = enabledIndex === commandPaletteSelectedIndex && !item.disabled;
-                return (
-                  <button className={active ? "active" : ""} disabled={item.disabled} key={item.id} onClick={() => runPaletteItem(item)}>
-                    {renderCommandIcon(item.icon)}
-                    <span>
-                      <strong>{item.label}</strong>
-                      <small>{item.group} · {item.meta}</small>
-                    </span>
-                  </button>
-                );
-              })
-            )}
+            <div className="command-palette-body">
+              {commandPaletteItems.length === 0 ? (
+                <div className="command-empty">
+                  <strong>No results for “{commandPaletteQuery.trim()}”</strong>
+                  <span>Try searching by file name, content, or command.</span>
+                </div>
+              ) : commandPaletteHasQuery ? (
+                <section className="command-palette-section">
+                  <h2>Search results</h2>
+                  <div>{commandPaletteItems.map(renderCommandPaletteItem)}</div>
+                </section>
+              ) : (
+                <>
+                  {commandPaletteCommands.length > 0 && (
+                    <section className="command-palette-section">
+                      <h2>Commands</h2>
+                      <div>{commandPaletteCommands.map(renderCommandPaletteItem)}</div>
+                    </section>
+                  )}
+                  {commandPaletteRecentFiles.length > 0 && (
+                    <section className="command-palette-section">
+                      <h2>Recent files</h2>
+                      <div>{commandPaletteRecentFiles.map(renderCommandPaletteItem)}</div>
+                    </section>
+                  )}
+                  {commandPaletteUnavailable.length > 0 && (
+                    <section className="command-palette-section command-palette-unavailable">
+                      <h2>Unavailable</h2>
+                      <div>{commandPaletteUnavailable.map(renderCommandPaletteItem)}</div>
+                    </section>
+                  )}
+                </>
+              )}
+            </div>
+            <footer className="command-palette-footer">
+              <span><kbd>↑↓</kbd> Navigate</span>
+              <span><kbd>↵</kbd> Open</span>
+              <span><kbd>esc</kbd> Close</span>
+            </footer>
           </div>
         </div>
       )}
@@ -2090,14 +3308,35 @@ export function WorkspaceShell() {
           </section>
         </div>
       )}
-      {accountContextMenu && (
-        <div className="file-context-layer" onClick={() => setAccountContextMenu(null)}>
-          <div className="account-context-menu" onClick={(event) => event.stopPropagation()} style={{ left: accountContextMenu.x, top: accountContextMenu.y }}>
-            <button onClick={() => { setSettingsOpen(true); setAccountContextMenu(null); }}>
-              <SettingsIcon />
-              Settings
-            </button>
-          </div>
+      {workspaceCreateOpen && (
+        <div className="workspace-create-layer" onClick={() => !workspaceCreating && setWorkspaceCreateOpen(false)}>
+          <form
+            aria-labelledby="workspace-create-title"
+            aria-modal="true"
+            className="workspace-create-dialog"
+            onClick={(event) => event.stopPropagation()}
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (workspaceNameIsValid) void createWorkspace();
+            }}
+            role="dialog"
+          >
+            <div className="workspace-create-heading">
+              <span>New workspace</span>
+              <h2 id="workspace-create-title">Create a workspace</h2>
+              <p>Name the room before Slate creates files, notes, and shared context around it.</p>
+            </div>
+            <label className="cairn-field">
+              <span className="cairn-field__label">Workspace name</span>
+              <input autoFocus className="cairn-field__input" disabled={workspaceCreating} onChange={(event) => setWorkspaceNameDraft(event.target.value)} placeholder="acme-prod" spellCheck={false} type="text" value={workspaceNameDraft} />
+              <span className="cairn-field__help">Lowercase letters, numbers, and hyphens.</span>
+            </label>
+            {workspaceCreateError && <strong className="workspace-create-error">{workspaceCreateError}</strong>}
+            <div className="workspace-create-actions">
+              <button disabled={workspaceCreating} onClick={() => setWorkspaceCreateOpen(false)} type="button">Cancel</button>
+              <button className="primary-control" disabled={workspaceCreating || !workspaceNameIsValid} type="submit">{workspaceCreating ? "Creating" : "Create workspace"}</button>
+            </div>
+          </form>
         </div>
       )}
       {settingsOpen && (
@@ -2105,15 +3344,43 @@ export function WorkspaceShell() {
           activeMemberRole={activeMember?.role ?? "guest"}
           activeUser={payload?.activeUser ?? null}
           confirmDeleteFiles={confirmDeleteFiles}
+          focusAccount={settingsFocusAccount}
+          key={settingsFocusAccount ? "profile" : "settings"}
           theme={theme}
           workspace={activeWorkspace}
           workspacesCount={payload?.workspaces.length ?? 0}
           onClose={() => setSettingsOpen(false)}
           onConfirmDeleteFilesChange={setConfirmDeleteFiles}
           onLogout={logout}
+          onProfileUpdated={updateProfile}
           onThemeChange={setSelectedTheme}
+          onWorkspaceIdentityUpdated={updateWorkspaceIdentity}
+          onWorkspaceSettingsUpdated={updateWorkspaceSettings}
         />
       )}
     </main>
   );
+}
+
+function runTerminalLines(run: WorkspaceJobRun) {
+  const lines = [
+    `$ slate run ${run.documentTitle ?? "document"}`,
+    `environment=${run.kind}`,
+    `status=${run.status}`,
+    `duration=${formatRunDuration(run)}`,
+    ...run.output.split(/\r?\n/).filter(Boolean)
+  ];
+
+  if (run.error) {
+    lines.push(`error=${run.error}`);
+  }
+
+  return lines;
+}
+
+function formatRunDuration(run: WorkspaceJobRun) {
+  const startedAt = Date.parse(run.createdAt);
+  const endedAt = Date.parse(run.updatedAt);
+  if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt)) return "unknown";
+  return `${Math.max(0, endedAt - startedAt)}ms`;
 }
