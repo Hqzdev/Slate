@@ -4,8 +4,12 @@ export default function LoginPage() {
   return (
     <AuthPage
       mode="login"
-      title="Sign in to Slate"
-      subtitle="Your workspace is where you left it."
+      title={
+        <>
+          Return to your <span>shared room</span>.
+        </>
+      }
+      subtitle="Sign in to continue with the code, decisions, and activity your team kept together."
       submitLabel="Sign in"
       submittingLabel="Signing in..."
       footerText="New to Slate?"

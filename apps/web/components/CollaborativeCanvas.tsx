@@ -1,6 +1,6 @@
 "use client";
 
-import { type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type CanvasColor,
   type CanvasContextAction,
@@ -24,6 +24,9 @@ import {
 } from "@/components/CanvasEditorShell";
 import { LiveCursors, type LiveCursor, type LiveCursorUser } from "@/components/LiveCursors";
 import { cornerResizeHandleOrder, getResizeHandleAtPoint, getResizeHandlePoints, resizeShape, type ResizeHandle } from "@/lib/canvas/canvasGeometry";
+import { isCanvasDocumentV1, MAXIMUM_CANVAS_STATE_BYTES } from "@/lib/canvas/canvasDocumentSchema";
+import { canvasConflictDraftStore } from "@/lib/client/canvasConflictDraftStore";
+import { fetchRealtimeGrant } from "@/lib/client/realtimeGrant";
 import { type RealtimeConnectionStatus, watchRealtimeConnection } from "@/lib/client/realtimeConnection";
 import { WebsocketProvider } from "y-websocket";
 import * as Y from "yjs";
@@ -31,11 +34,15 @@ import * as Y from "yjs";
 type CollaborativeCanvasProps = {
   canvasId: string;
   initialState: unknown;
-  onStateChange: (state: unknown) => void;
+  onCommentSelectionChange: (shape: { id: string; name: string } | null) => void;
+  onLocalSaveBlockedChange: (documentId: string, blocked: boolean) => void;
   onPresenceChange: (users: LiveCursorUser[]) => void;
   onRealtimeStatusChange: (status: RealtimeConnectionStatus) => void;
+  onStateChange: (documentId: string, state: unknown) => boolean;
   readOnly: boolean;
+  registerDocumentFlush: (documentId: string, flush: () => void) => () => void;
   roomName: string;
+  saveValidationError: string | null;
   theme: "dark" | "light";
   title: string;
   user: LiveCursorUser;
@@ -84,6 +91,19 @@ type DragState = {
   viewport: CanvasViewport;
 } | {
   document: CanvasDocument;
+  origin: CanvasPoint;
+  shapeType: CanvasShapeType;
+  target: CanvasPoint;
+  type: "draw";
+  viewport: CanvasViewport;
+} | {
+  document: CanvasDocument;
+  end: LineEndpoint;
+  id: string;
+  type: "lineEndpoint";
+  viewport: CanvasViewport;
+} | {
+  document: CanvasDocument;
   ids: string[];
   origin: CanvasPoint;
   type: "move";
@@ -107,10 +127,12 @@ type DragState = {
   viewport: CanvasViewport;
 };
 
-const resizableShapeTypes = new Set<CanvasShapeType>(["ellipse", "note", "rectangle", "text"]);
-const connectableShapeTypes = new Set<CanvasShapeType>(["ellipse", "note", "rectangle", "text"]);
+const resizableShapeTypes = new Set<CanvasShapeType>(["diamond", "ellipse", "note", "parallelogram", "rectangle", "text", "trapezoid"]);
+const connectableShapeTypes = new Set<CanvasShapeType>(["diamond", "ellipse", "note", "parallelogram", "rectangle", "text", "trapezoid"]);
 
 type ConnectionHandle = "e" | "n" | "s" | "w";
+
+type LineEndpoint = "end" | "start";
 
 type EditingTextState = {
   id: string;
@@ -136,8 +158,13 @@ type DragPreview = {
 };
 
 type ConnectionPreview = {
+  kind: "arrow" | "line";
   source: CanvasPoint;
   target: CanvasPoint;
+};
+
+type ShapePreview = {
+  shape: CanvasShape;
 };
 
 const syncUrl = process.env.NEXT_PUBLIC_SYNC_URL ?? "ws://127.0.0.1:1234";
@@ -171,6 +198,7 @@ const maxCanvasSize = 96;
 const minLineSize = 1;
 const maxLineSize = 16;
 const minLineLength = 8;
+const minDrawSize = 8;
 const legacyCanvasSizes: Record<string, CanvasSize> = {
   l: 24,
   m: 18,
@@ -225,10 +253,10 @@ function createDefaultDocument(): CanvasDocument {
     gridSize: defaultGridSize,
     shapeTombstones: {},
     shapes: [
-      createShape("rectangle", { x: 110, y: 90 }, { name: "Rectangle 1", text: "charge()", w: 180, h: 76 }),
-      createShape("rectangle", { x: 250, y: 230 }, { name: "Rectangle 2", text: "gateway.submit", w: 190, h: 82 }),
-      createShape("note", { x: 430, y: 105 }, { name: "Note 1", text: "retry must reset backoff after success", w: 220, h: 120 }),
-      createShape("arrow", { x: 210, y: 165 }, { name: "Arrow 1", w: 160, h: 110 })
+      createShape("rectangle", { x: 110, y: 90 }, { font: "mono", name: "Charge service", text: "charge()", w: 180, h: 76 }),
+      createShape("rectangle", { x: 250, y: 230 }, { font: "mono", name: "Payment gateway", text: "gateway.submit", w: 190, h: 82 }),
+      createShape("note", { x: 430, y: 105 }, { color: "grey", fill: "solid", name: "Retry policy", text: "Retry must reset backoff after success.", w: 220, h: 120 }),
+      createShape("arrow", { x: 210, y: 165 }, { name: "Submit request", w: 160, h: 110 })
     ],
     snapToGrid: true,
     version: 1,
@@ -240,9 +268,9 @@ function createShape(type: CanvasShapeType, point: CanvasPoint, overrides: Parti
   const now = Date.now();
   const baseShape: CanvasShape = {
     clientId: "local",
-    color: "blue",
+    color: type === "note" ? "grey" : "blue",
     dash: "solid",
-    fill: type === "text" || type === "line" || type === "arrow" ? "none" : "semi",
+    fill: type === "note" ? "solid" : type === "text" || type === "line" || type === "arrow" ? "none" : "semi",
     font: "sans",
     h: type === "text" ? 48 : type === "line" || type === "arrow" ? 80 : 96,
     id: createShapeId(),
@@ -264,6 +292,43 @@ function createShape(type: CanvasShapeType, point: CanvasPoint, overrides: Parti
     ...baseShape,
     ...overrides
   };
+}
+
+function getShapeToolType(toolId: CanvasToolId): CanvasShapeType | null {
+  if (toolId === "arrow" || toolId === "diamond" || toolId === "ellipse" || toolId === "line" || toolId === "note" || toolId === "parallelogram" || toolId === "rectangle" || toolId === "text" || toolId === "trapezoid") return toolId;
+  return null;
+}
+
+function getDrawShapeBounds(origin: CanvasPoint, target: CanvasPoint) {
+  return {
+    h: Math.round(Math.abs(target.y - origin.y)),
+    w: Math.round(Math.abs(target.x - origin.x)),
+    x: Math.round(Math.min(origin.x, target.x)),
+    y: Math.round(Math.min(origin.y, target.y))
+  };
+}
+
+function createDrawnShape(type: CanvasShapeType, origin: CanvasPoint, target: CanvasPoint, shapes: CanvasShape[]) {
+  if (type === "arrow" || type === "line") {
+    return createShape(type, origin, {
+      h: Math.round(target.y - origin.y),
+      name: getNextShapeName(shapes, type),
+      w: Math.round(target.x - origin.x)
+    });
+  }
+
+  const bounds = getDrawShapeBounds(origin, target);
+  return createShape(type, { x: bounds.x, y: bounds.y }, {
+    h: bounds.h,
+    name: getNextShapeName(shapes, type),
+    w: bounds.w
+  });
+}
+
+function isDrawGestureLarge(type: CanvasShapeType, origin: CanvasPoint, target: CanvasPoint) {
+  if (type === "arrow" || type === "line") return Math.hypot(target.x - origin.x, target.y - origin.y) >= minLineLength;
+  const bounds = getDrawShapeBounds(origin, target);
+  return bounds.w >= minDrawSize && bounds.h >= minDrawSize;
 }
 
 function isCanvasDocument(value: unknown): value is CanvasDocument {
@@ -298,7 +363,7 @@ function normalizeDocument(value: unknown): CanvasDocument {
 function normalizeShapeNames(shapes: CanvasShape[]) {
   const counts = new Map<CanvasShapeType, number>();
   return shapes.map((shape) => {
-    if (shape.name.trim() && !shape.name.match(/^(Arrow|Ellipse|Line|Note|Rectangle|Text)$/)) return shape;
+    if (!isGeneratedShapeName(shape)) return shape;
     const nextName = getNextShapeName(shapes.slice(0, shapes.indexOf(shape)), shape.type, counts);
     return { ...shape, name: nextName };
   });
@@ -327,11 +392,16 @@ function getShapeTypeLabel(type: CanvasShapeType) {
   return type.charAt(0).toUpperCase() + type.slice(1);
 }
 
+function isGeneratedShapeName(shape: CanvasShape) {
+  const label = getShapeTypeLabel(shape.type);
+  return new RegExp(`^${label}(?: \\d+)?$`).test(shape.name.trim());
+}
+
 function getNextShapeName(shapes: CanvasShape[], type: CanvasShapeType, seededCounts?: Map<CanvasShapeType, number>) {
   const label = getShapeTypeLabel(type);
   const count = seededCounts?.get(type) ?? shapes.filter((shape) => shape.type === type).length;
   seededCounts?.set(type, count + 1);
-  return `${label} ${count + 1}`;
+  return count === 0 ? label : `${label} ${count + 1}`;
 }
 
 function sanitizeShapeName(shape: CanvasShape, name: string) {
@@ -350,6 +420,45 @@ function getShapeBounds(shape: CanvasShape) {
   };
 }
 
+function isPolygonShape(shape: CanvasShape) {
+  return shape.type === "diamond" || shape.type === "trapezoid" || shape.type === "parallelogram";
+}
+
+function getPolygonPoints(shape: CanvasShape) {
+  const bounds = getShapeBounds(shape);
+  if (shape.type === "diamond") {
+    return [
+      { x: bounds.x + bounds.w / 2, y: bounds.y },
+      { x: bounds.x + bounds.w, y: bounds.y + bounds.h / 2 },
+      { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h },
+      { x: bounds.x, y: bounds.y + bounds.h / 2 }
+    ];
+  }
+  if (shape.type === "trapezoid") {
+    const inset = Math.min(bounds.w * 0.25, bounds.w / 3);
+    return [
+      { x: bounds.x + inset, y: bounds.y },
+      { x: bounds.x + bounds.w - inset, y: bounds.y },
+      { x: bounds.x + bounds.w, y: bounds.y + bounds.h },
+      { x: bounds.x, y: bounds.y + bounds.h }
+    ];
+  }
+  if (shape.type === "parallelogram") {
+    const offset = Math.min(bounds.w * 0.22, bounds.w / 3);
+    return [
+      { x: bounds.x + offset, y: bounds.y },
+      { x: bounds.x + bounds.w, y: bounds.y },
+      { x: bounds.x + bounds.w - offset, y: bounds.y + bounds.h },
+      { x: bounds.x, y: bounds.y + bounds.h }
+    ];
+  }
+  return [];
+}
+
+function getPolygonPointString(shape: CanvasShape, formatter: (value: number) => string = String) {
+  return getPolygonPoints(shape).map((point) => `${formatter(point.x)},${formatter(point.y)}`).join(" ");
+}
+
 function getSelectedBounds(shapes: CanvasShape[]) {
   if (shapes.length === 0) return null;
   const bounds = shapes.map(getShapeBounds);
@@ -358,6 +467,53 @@ function getSelectedBounds(shapes: CanvasShape[]) {
   const maxX = Math.max(...bounds.map((shape) => shape.x + shape.w));
   const maxY = Math.max(...bounds.map((shape) => shape.y + shape.h));
   return { h: maxY - minY, w: maxX - minX, x: minX, y: minY };
+}
+
+function translateShape(shape: CanvasShape, dx: number, dy: number) {
+  return { ...shape, x: Math.round(shape.x + dx), y: Math.round(shape.y + dy) };
+}
+
+function alignCanvasShapes(shapes: CanvasShape[], action: CanvasInspectorAction) {
+  const selectionBounds = getSelectedBounds(shapes);
+  if (!selectionBounds || shapes.length < 2) return new Map(shapes.map((shape) => [shape.id, shape]));
+  const boundsById = new Map(shapes.map((shape) => [shape.id, getShapeBounds(shape)]));
+
+  if (action === "alignLeft" || action === "alignCenter" || action === "alignRight") {
+    const targetX = action === "alignLeft" ? selectionBounds.x : action === "alignCenter" ? selectionBounds.x + selectionBounds.w / 2 : selectionBounds.x + selectionBounds.w;
+    return new Map(shapes.map((shape) => {
+      const bounds = boundsById.get(shape.id) ?? getShapeBounds(shape);
+      const shapeX = action === "alignLeft" ? bounds.x : action === "alignCenter" ? bounds.x + bounds.w / 2 : bounds.x + bounds.w;
+      return [shape.id, translateShape(shape, targetX - shapeX, 0)];
+    }));
+  }
+
+  if (action === "distributeHorizontal" && shapes.length >= 3) {
+    const orderedShapes = [...shapes].sort((left, right) => (boundsById.get(left.id)?.x ?? 0) - (boundsById.get(right.id)?.x ?? 0));
+    const totalWidth = orderedShapes.reduce((width, shape) => width + (boundsById.get(shape.id)?.w ?? 0), 0);
+    const gap = (selectionBounds.w - totalWidth) / (orderedShapes.length - 1);
+    let cursor = selectionBounds.x;
+    return new Map(orderedShapes.map((shape) => {
+      const bounds = boundsById.get(shape.id) ?? getShapeBounds(shape);
+      const translatedShape = translateShape(shape, cursor - bounds.x, 0);
+      cursor += bounds.w + gap;
+      return [shape.id, translatedShape];
+    }));
+  }
+
+  if (action === "distributeVertical" && shapes.length >= 3) {
+    const orderedShapes = [...shapes].sort((left, right) => (boundsById.get(left.id)?.y ?? 0) - (boundsById.get(right.id)?.y ?? 0));
+    const totalHeight = orderedShapes.reduce((height, shape) => height + (boundsById.get(shape.id)?.h ?? 0), 0);
+    const gap = (selectionBounds.h - totalHeight) / (orderedShapes.length - 1);
+    let cursor = selectionBounds.y;
+    return new Map(orderedShapes.map((shape) => {
+      const bounds = boundsById.get(shape.id) ?? getShapeBounds(shape);
+      const translatedShape = translateShape(shape, 0, cursor - bounds.y);
+      cursor += bounds.h + gap;
+      return [shape.id, translatedShape];
+    }));
+  }
+
+  return new Map(shapes.map((shape) => [shape.id, shape]));
 }
 
 function getFill(shape: CanvasShape) {
@@ -495,6 +651,18 @@ function getWrappedCanvasTextLines(shape: CanvasShape) {
   return visibleLines;
 }
 
+function resizeShapeToTextContent(shape: CanvasShape, text: string) {
+  if (shape.type === "line" || shape.type === "arrow") return { ...shape, text };
+  const paragraphs = text.split("\n");
+  const longestParagraphWidth = Math.max(...paragraphs.map((paragraph) => getEstimatedCanvasTextWidth(paragraph, shape)), 0);
+  const width = shape.type === "text" ? Math.max(80, Math.min(480, Math.ceil(longestParagraphWidth + canvasTextPaddingX * 2))) : shape.w;
+  const sizingShape = { ...shape, h: 10000, text, w: width };
+  const lineCount = paragraphs.reduce((count, paragraph) => count + wrapCanvasTextParagraph(paragraph, sizingShape, getCanvasTextMaxLineWidth(sizingShape)).length, 0);
+  const contentHeight = Math.ceil(lineCount * getCanvasTextLineHeight(sizingShape) + canvasTextPaddingY * 2);
+  const height = shape.type === "text" ? Math.max(36, contentHeight) : Math.max(shape.h, contentHeight);
+  return { ...shape, h: height, text, w: width };
+}
+
 function renderArrowHeadSvg(shape: CanvasShape) {
   const end = { x: shape.x + shape.w, y: shape.y + shape.h };
   const angle = Math.atan2(shape.h, shape.w);
@@ -518,6 +686,7 @@ function renderShapeSvg(shape: CanvasShape) {
   const textSvg = renderShapeTextSvg(shape);
   if (shape.type === "rectangle") return `<g><rect fill="${getFill(shape)}" height="${formatSvgNumber(bounds.h)}" rx="8" ${commonAttributes} width="${formatSvgNumber(bounds.w)}" x="${formatSvgNumber(bounds.x)}" y="${formatSvgNumber(bounds.y)}" />${textSvg}</g>`;
   if (shape.type === "ellipse") return `<g><ellipse cx="${formatSvgNumber(bounds.x + bounds.w / 2)}" cy="${formatSvgNumber(bounds.y + bounds.h / 2)}" fill="${getFill(shape)}" rx="${formatSvgNumber(bounds.w / 2)}" ry="${formatSvgNumber(bounds.h / 2)}" ${commonAttributes} />${textSvg}</g>`;
+  if (isPolygonShape(shape)) return `<g><polygon fill="${getFill(shape)}" points="${getPolygonPointString(shape, formatSvgNumber)}" ${commonAttributes} />${textSvg}</g>`;
   if (shape.type === "note") return `<g><rect fill="${getFill({ ...shape, fill: shape.fill === "none" ? "solid" : shape.fill })}" height="${formatSvgNumber(bounds.h)}" rx="8" ${commonAttributes} width="${formatSvgNumber(bounds.w)}" x="${formatSvgNumber(bounds.x)}" y="${formatSvgNumber(bounds.y)}" />${textSvg}</g>`;
   if (shape.type === "line") return `<line x1="${formatSvgNumber(shape.x)}" x2="${formatSvgNumber(shape.x + shape.w)}" y1="${formatSvgNumber(shape.y)}" y2="${formatSvgNumber(shape.y + shape.h)}" ${commonAttributes} />`;
   if (shape.type === "arrow") return `<g><line x1="${formatSvgNumber(shape.x)}" x2="${formatSvgNumber(shape.x + shape.w)}" y1="${formatSvgNumber(shape.y)}" y2="${formatSvgNumber(shape.y + shape.h)}" ${commonAttributes} />${renderArrowHeadSvg(shape)}</g>`;
@@ -674,6 +843,44 @@ function getConnectionTargetPoint(shapes: CanvasShape[], sourceId: string, point
   }
 
   return nearestTarget?.point ?? null;
+}
+
+function getLineEndpoints(shape: CanvasShape): Record<LineEndpoint, CanvasPoint> {
+  return {
+    end: { x: shape.x + shape.w, y: shape.y + shape.h },
+    start: { x: shape.x, y: shape.y }
+  };
+}
+
+function getLineEndpointAtPoint(shape: CanvasShape, point: CanvasPoint, viewport: CanvasViewport): LineEndpoint | null {
+  const hitRadius = 9 / viewport.zoom;
+  const endpoints = getLineEndpoints(shape);
+  for (const endpoint of Object.keys(endpoints) as LineEndpoint[]) {
+    const endpointPoint = endpoints[endpoint];
+    if (Math.abs(point.x - endpointPoint.x) <= hitRadius && Math.abs(point.y - endpointPoint.y) <= hitRadius) return endpoint;
+  }
+  return null;
+}
+
+function getSnappedLinePoint(shapes: CanvasShape[], point: CanvasPoint, document: CanvasDocument, viewport: CanvasViewport, snapDisabled = false) {
+  return getConnectionTargetPoint(shapes, "", point, viewport) ?? snapPoint(point, document, snapDisabled);
+}
+
+function moveLineEndpoint(shape: CanvasShape, end: LineEndpoint, point: CanvasPoint): CanvasShape {
+  if (end === "start") {
+    return {
+      ...shape,
+      h: Math.round(shape.y + shape.h - point.y),
+      w: Math.round(shape.x + shape.w - point.x),
+      x: Math.round(point.x),
+      y: Math.round(point.y)
+    };
+  }
+  return {
+    ...shape,
+    h: Math.round(point.y - shape.y),
+    w: Math.round(point.x - shape.x)
+  };
 }
 
 function snapValue(value: number, gridSize: number) {
@@ -893,19 +1100,21 @@ function documentsEqual(left: CanvasDocument, right: CanvasDocument) {
   return JSON.stringify({ ...left, viewport: undefined }) === JSON.stringify({ ...right, viewport: undefined });
 }
 
-export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onPresenceChange, onRealtimeStatusChange, readOnly, roomName, title, user }: CollaborativeCanvasProps) {
+export function CollaborativeCanvas({ canvasId, initialState, onCommentSelectionChange, onLocalSaveBlockedChange, onStateChange, onPresenceChange, onRealtimeStatusChange, readOnly, registerDocumentFlush, roomName, saveValidationError, title, user }: CollaborativeCanvasProps) {
   const roomKey = useMemo(() => `slate:room:${roomName}:canvas:${canvasId}`, [canvasId, roomName]);
   const [document, setDocument] = useState<CanvasDocument>(() => normalizeDocument(initialState));
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [activeToolId, setActiveToolId] = useState<CanvasToolId>("select");
   const [cursors, setCursors] = useState<LiveCursor[]>([]);
   const [connectionPreview, setConnectionPreview] = useState<ConnectionPreview | null>(null);
+  const [shapePreview, setShapePreview] = useState<ShapePreview | null>(null);
   const [editingText, setEditingText] = useState<EditingTextState | null>(null);
   const [history, setHistory] = useState<CanvasDocument[]>([]);
   const [dragPreview, setDragPreview] = useState<DragPreview | null>(null);
   const [remoteSelections, setRemoteSelections] = useState<RemoteSelection[]>([]);
   const [redoHistory, setRedoHistory] = useState<CanvasDocument[]>([]);
   const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
+  const [localValidationError, setLocalValidationError] = useState<string | null>(null);
   const applyingRemoteRef = useRef(false);
   const clipboardRef = useRef<CanvasShape[]>([]);
   const dragPreviewFrameRef = useRef<number | null>(null);
@@ -913,15 +1122,49 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
   const dragStateRef = useRef<DragState | null>(null);
   const documentRef = useRef(document);
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const onCommentSelectionChangeRef = useRef(onCommentSelectionChange);
+  const onLocalSaveBlockedChangeRef = useRef(onLocalSaveBlockedChange);
   const onStateChangeRef = useRef(onStateChange);
   const onPresenceChangeRef = useRef(onPresenceChange);
   const realtimeStatusChangeRef = useRef(onRealtimeStatusChange);
   const pointerPublishTimerRef = useRef<number | null>(null);
   const pointerStateRef = useRef<CanvasPresencePointer | null>(null);
+  const pendingRemoteDocumentRef = useRef<CanvasDocument | null>(null);
   const providerRef = useRef<WebsocketProvider | null>(null);
+  const readOnlyByCanvasRef = useRef<Map<string, boolean>>(new Map());
+  const recoveredDraftAwaitingRealtimeRef = useRef(false);
   const saveTimerRef = useRef<number | null>(null);
   const snapshotMapRef = useRef<Y.Map<unknown> | null>(null);
   const textEditCancelledRef = useRef(false);
+  onLocalSaveBlockedChangeRef.current = onLocalSaveBlockedChange;
+  onCommentSelectionChangeRef.current = onCommentSelectionChange;
+  onStateChangeRef.current = onStateChange;
+  readOnlyByCanvasRef.current.set(canvasId, readOnly);
+
+  const flushCanvasSave = useCallback(() => {
+    if (saveTimerRef.current === null) return;
+    window.clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = null;
+    if (recoveredDraftAwaitingRealtimeRef.current || pendingRemoteDocumentRef.current || !isCanvasDocumentV1(documentRef.current)) {
+      canvasConflictDraftStore.write(canvasId, documentRef.current);
+      onLocalSaveBlockedChangeRef.current(canvasId, true);
+      setLocalValidationError(recoveredDraftAwaitingRealtimeRef.current
+        ? "Recovered local canvas changes are waiting for realtime synchronization."
+        : "Local and remote canvas changes exceed the shared size limit. Remove content to finish merging.");
+      return;
+    }
+    if (readOnlyByCanvasRef.current.get(canvasId) !== false || !onStateChangeRef.current(canvasId, documentRef.current)) {
+      canvasConflictDraftStore.write(canvasId, documentRef.current);
+      onLocalSaveBlockedChangeRef.current(canvasId, true);
+      setLocalValidationError("Local canvas changes cannot be saved with read-only access.");
+      return;
+    }
+    canvasConflictDraftStore.write(canvasId, documentRef.current);
+    snapshotMapRef.current?.set("snapshot", documentRef.current);
+    onLocalSaveBlockedChangeRef.current(canvasId, false);
+  }, [canvasId]);
+
+  const validationError = localValidationError ?? saveValidationError;
 
   const selectedShapes = document.shapes.filter((shape) => selectedIds.includes(shape.id));
   const selectedShape = selectedShapes.length === 1 ? selectedShapes[0] : null;
@@ -933,6 +1176,8 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
   }, [document.shapes, dragPreview]);
   const renderedSelectedShapes = renderedShapes.filter((shape) => selectedIds.includes(shape.id));
   const renderedSelectedShape = renderedSelectedShapes.length === 1 ? renderedSelectedShapes[0] : null;
+  const selectedCommentShapeId = renderedSelectedShape?.id ?? null;
+  const selectedCommentShapeName = renderedSelectedShape?.name ?? null;
   const selectedBounds = getSelectedBounds(selectedShapes);
   const stats: CanvasStats = {
     activeToolId,
@@ -950,16 +1195,79 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
   }, [document]);
 
   useEffect(() => {
+    onCommentSelectionChangeRef.current(selectedCommentShapeId && selectedCommentShapeName ? { id: selectedCommentShapeId, name: selectedCommentShapeName } : null);
+  }, [selectedCommentShapeId, selectedCommentShapeName]);
+
+  useEffect(() => () => onCommentSelectionChangeRef.current(null), [canvasId]);
+
+  useEffect(() => {
+    const synchronizationTimer = window.setTimeout(() => {
+      const recoveredDraft = canvasConflictDraftStore.read(canvasId);
+      const initialDocument = normalizeDocument(initialState);
+      const reconciledDocument = recoveredDraft ? reconcileCanvasDocuments(recoveredDraft, initialDocument) : initialDocument;
+      const recoveryFits = isCanvasDocumentV1(reconciledDocument);
+      const nextDocument = recoveredDraft && !recoveryFits ? recoveredDraft : reconciledDocument;
+      pendingRemoteDocumentRef.current = recoveredDraft ? initialDocument : null;
+      recoveredDraftAwaitingRealtimeRef.current = Boolean(recoveredDraft);
+      documentRef.current = nextDocument;
+      setDocument(nextDocument);
+      if (recoveredDraft) canvasConflictDraftStore.write(canvasId, nextDocument);
+      onLocalSaveBlockedChangeRef.current(canvasId, Boolean(recoveredDraft));
+      setLocalValidationError(recoveredDraft
+        ? recoveryFits
+          ? "Recovered local canvas changes are waiting for realtime synchronization."
+          : "Local and remote canvas changes exceed the shared size limit. Remove content to finish merging."
+        : null);
+    }, 0);
+    return () => window.clearTimeout(synchronizationTimer);
+  }, [canvasId]);
+
+  useEffect(() => {
+    if (pendingRemoteDocumentRef.current && !recoveredDraftAwaitingRealtimeRef.current) return;
+    const acknowledgedDraft = canvasConflictDraftStore.matchesPersisted(canvasId, initialState);
+    if (acknowledgedDraft) {
+      pendingRemoteDocumentRef.current = null;
+      recoveredDraftAwaitingRealtimeRef.current = false;
+      onLocalSaveBlockedChangeRef.current(canvasId, false);
+      window.setTimeout(() => setLocalValidationError(null), 0);
+    }
+    if ((!acknowledgedDraft && canvasConflictDraftStore.read(canvasId)) || pendingRemoteDocumentRef.current || recoveredDraftAwaitingRealtimeRef.current || saveTimerRef.current !== null || !isCanvasDocumentV1(initialState)) return;
+    const persistedDocument = normalizeDocument(initialState);
+    const reconciledDocument = reconcileCanvasDocuments(documentRef.current, persistedDocument);
+    if (!isCanvasDocumentV1(reconciledDocument)) {
+      pendingRemoteDocumentRef.current = persistedDocument;
+      canvasConflictDraftStore.write(canvasId, documentRef.current);
+      onLocalSaveBlockedChangeRef.current(canvasId, true);
+      setLocalValidationError("Local and persisted canvas changes exceed the shared size limit. Remove content to finish merging.");
+      return;
+    }
+    const requiresAuthoritativeSave = !documentsEqual(reconciledDocument, persistedDocument);
+    if (JSON.stringify(reconciledDocument) !== JSON.stringify(documentRef.current)) {
+      documentRef.current = reconciledDocument;
+      setDocument(reconciledDocument);
+      setSelectedIds((current) => current.filter((id) => reconciledDocument.shapes.some((shape) => shape.id === id)));
+    }
+    setLocalValidationError(null);
+    if (!requiresAuthoritativeSave) {
+      if (acknowledgedDraft) canvasConflictDraftStore.clearIfPersisted(canvasId, initialState);
+      onLocalSaveBlockedChangeRef.current(canvasId, false);
+      return;
+    }
+    canvasConflictDraftStore.write(canvasId, reconciledDocument);
+    onLocalSaveBlockedChangeRef.current(canvasId, true);
+    if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = window.setTimeout(flushCanvasSave, 350);
+  }, [canvasId, initialState]);
+
+  useEffect(() => {
     onPresenceChangeRef.current = onPresenceChange;
   }, [onPresenceChange]);
 
   useEffect(() => {
-    onStateChangeRef.current = onStateChange;
-  }, [onStateChange]);
-
-  useEffect(() => {
     realtimeStatusChangeRef.current = onRealtimeStatusChange;
   }, [onRealtimeStatusChange]);
+
+  useEffect(() => registerDocumentFlush(canvasId, flushCanvasSave), [canvasId, flushCanvasSave, registerDocumentFlush]);
 
   useEffect(() => {
     const provider = providerRef.current;
@@ -987,7 +1295,9 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
   useEffect(() => {
     const doc = new Y.Doc();
     const snapshotMap = doc.getMap<unknown>("canvas");
-    const provider = new WebsocketProvider(syncUrl, roomKey, doc, { maxBackoffTime: 2500, resyncInterval: 5000 });
+    let disposed = false;
+    let provider: WebsocketProvider | null = null;
+    let unwatchRealtimeConnection: (() => void) | null = null;
     const localUser = {
       canvasId,
       color: user.color,
@@ -997,17 +1307,13 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
       role: user.role
     };
     snapshotMapRef.current = snapshotMap;
-    providerRef.current = provider;
-    const unwatchRealtimeConnection = watchRealtimeConnection(provider, (status) => realtimeStatusChangeRef.current(status));
-    provider.awareness.setLocalStateField("user", localUser);
-    provider.awareness.setLocalStateField("selection", {
-      canvasId,
-      selectedShapeIds: [],
-      updatedAt: Date.now()
-    });
 
     const publish = (nextDocument: CanvasDocument) => {
       if (applyingRemoteRef.current) return;
+      if (!isCanvasDocumentV1(nextDocument)) {
+        setLocalValidationError("Canvas state is invalid or exceeds the shared size limit.");
+        return;
+      }
       snapshotMap.set("snapshot", nextDocument);
     };
 
@@ -1015,18 +1321,52 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
       const snapshot = snapshotMap.get("snapshot");
       if (!isCanvasDocument(snapshot)) return;
       const normalizedSnapshot = normalizeDocument(snapshot);
-      const nextDocument = reconcileCanvasDocuments(documentRef.current, normalizedSnapshot);
-      if (documentsEqual(nextDocument, documentRef.current)) return;
-      applyingRemoteRef.current = true;
-      documentRef.current = nextDocument;
-      setDocument(nextDocument);
-      setSelectedIds((current) => current.filter((id) => nextDocument.shapes.some((shape) => shape.id === id)));
-      window.setTimeout(() => {
-        applyingRemoteRef.current = false;
-      }, 0);
+      if (!isCanvasDocumentV1(normalizedSnapshot)) {
+        setLocalValidationError("The shared canvas contains an invalid or oversized update.");
+        return;
+      }
+      const pendingRemoteDocument = pendingRemoteDocumentRef.current;
+      const hadPendingRemote = Boolean(pendingRemoteDocument) || recoveredDraftAwaitingRealtimeRef.current;
+      const combinedRemoteDocument = pendingRemoteDocument ? reconcileCanvasDocuments(pendingRemoteDocument, normalizedSnapshot) : normalizedSnapshot;
+      const nextDocument = reconcileCanvasDocuments(documentRef.current, combinedRemoteDocument);
+      if (!isCanvasDocumentV1(nextDocument)) {
+        pendingRemoteDocumentRef.current = combinedRemoteDocument;
+        recoveredDraftAwaitingRealtimeRef.current = false;
+        if (saveTimerRef.current) {
+          window.clearTimeout(saveTimerRef.current);
+          saveTimerRef.current = null;
+        }
+        canvasConflictDraftStore.write(canvasId, documentRef.current);
+        onLocalSaveBlockedChangeRef.current(canvasId, true);
+        setLocalValidationError("Local and remote canvas changes exceed the shared size limit. Remove content to finish merging.");
+        return;
+      }
+      pendingRemoteDocumentRef.current = null;
+      recoveredDraftAwaitingRealtimeRef.current = false;
+      setLocalValidationError(null);
+      const requiresAuthoritativeSave = hadPendingRemote || !documentsEqual(nextDocument, normalizedSnapshot);
+      const documentChanged = !documentsEqual(nextDocument, documentRef.current);
+      if (documentChanged) {
+        applyingRemoteRef.current = true;
+        documentRef.current = nextDocument;
+        setDocument(nextDocument);
+        setSelectedIds((current) => current.filter((id) => nextDocument.shapes.some((shape) => shape.id === id)));
+        window.setTimeout(() => {
+          applyingRemoteRef.current = false;
+        }, 0);
+      }
+      if (requiresAuthoritativeSave) {
+        canvasConflictDraftStore.write(canvasId, nextDocument);
+        onLocalSaveBlockedChangeRef.current(canvasId, true);
+        if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = window.setTimeout(flushCanvasSave, 350);
+      } else {
+        onLocalSaveBlockedChangeRef.current(canvasId, false);
+      }
     };
 
     const updatePresence = () => {
+      if (!provider) return;
       const states = Array.from(provider.awareness.getStates().values());
       const now = Date.now();
       const users = states
@@ -1055,52 +1395,112 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
     };
 
     snapshotMap.observe(applyRemoteSnapshot);
-    provider.awareness.on("change", updatePresence);
-    provider.on("sync", () => {
+    const handleSync = (synced: boolean) => {
+      if (!synced) return;
       const snapshot = snapshotMap.get("snapshot");
       if (isCanvasDocument(snapshot)) {
         applyRemoteSnapshot();
         return;
       }
+      const pendingRemoteDocument = pendingRemoteDocumentRef.current;
+      if (pendingRemoteDocument || recoveredDraftAwaitingRealtimeRef.current) {
+        const reconciledDocument = pendingRemoteDocument ? reconcileCanvasDocuments(documentRef.current, pendingRemoteDocument) : documentRef.current;
+        if (!isCanvasDocumentV1(reconciledDocument)) {
+          canvasConflictDraftStore.write(canvasId, documentRef.current);
+          onLocalSaveBlockedChangeRef.current(canvasId, true);
+          setLocalValidationError("Local and remote canvas changes exceed the shared size limit. Remove content to finish merging.");
+          return;
+        }
+        pendingRemoteDocumentRef.current = null;
+        recoveredDraftAwaitingRealtimeRef.current = false;
+        documentRef.current = reconciledDocument;
+        setDocument(reconciledDocument);
+        canvasConflictDraftStore.write(canvasId, reconciledDocument);
+        onLocalSaveBlockedChangeRef.current(canvasId, true);
+        setLocalValidationError(null);
+        if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = window.setTimeout(flushCanvasSave, 0);
+        return;
+      }
       publish(documentRef.current);
-    });
-    window.setTimeout(updatePresence, 0);
+    };
+    void fetchRealtimeGrant(roomKey).then((grant) => {
+      if (disposed) return;
+      provider = new WebsocketProvider(syncUrl, roomKey, doc, { maxBackoffTime: 2500, params: { grant }, resyncInterval: 5000 });
+      providerRef.current = provider;
+      unwatchRealtimeConnection = watchRealtimeConnection(provider, (status) => realtimeStatusChangeRef.current(status));
+      provider.awareness.setLocalStateField("user", localUser);
+      provider.awareness.setLocalStateField("selection", {
+        canvasId,
+        selectedShapeIds: [],
+        updatedAt: Date.now()
+      });
+      provider.awareness.on("change", updatePresence);
+      provider.on("sync", handleSync);
+      window.setTimeout(updatePresence, 0);
+    }).catch(() => realtimeStatusChangeRef.current("offline"));
     const stalePresenceTimer = window.setInterval(updatePresence, 1000);
 
     return () => {
+      disposed = true;
       clearDragPreview(false);
-      if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+      flushCanvasSave();
       if (pointerPublishTimerRef.current) window.clearTimeout(pointerPublishTimerRef.current);
       window.clearInterval(stalePresenceTimer);
-      onStateChangeRef.current(documentRef.current);
       snapshotMap.unobserve(applyRemoteSnapshot);
-      provider.awareness.off("change", updatePresence);
-      unwatchRealtimeConnection();
-      provider.destroy();
+      provider?.awareness.off("change", updatePresence);
+      provider?.off("sync", handleSync);
+      unwatchRealtimeConnection?.();
+      provider?.destroy();
       doc.destroy();
       providerRef.current = null;
       snapshotMapRef.current = null;
       onPresenceChangeRef.current([]);
     };
-  }, [canvasId, onRealtimeStatusChange, roomKey, user.color, user.id, user.initials, user.name, user.role]);
+  }, [canvasId, flushCanvasSave, onRealtimeStatusChange, roomKey, user.color, user.id, user.initials, user.name, user.role]);
 
   function commitDocument(nextDocument: CanvasDocument, recordHistory = true) {
     const stampedDocument = withChangedShapeMetadata(nextDocument, documentRef.current, user.id);
-    documentRef.current = stampedDocument;
+    if (!isCanvasDocumentV1(stampedDocument)) {
+      setLocalValidationError(`Canvas reached the ${Math.floor(MAXIMUM_CANVAS_STATE_BYTES / 1024)} KiB limit. Remove content before adding more.`);
+      return false;
+    }
+    const pendingRemoteDocument = pendingRemoteDocumentRef.current;
+    const reconciledDocument = pendingRemoteDocument ? reconcileCanvasDocuments(stampedDocument, pendingRemoteDocument) : stampedDocument;
+    const mergeResolved = isCanvasDocumentV1(reconciledDocument);
+    const committedDocument = mergeResolved ? reconciledDocument : stampedDocument;
+    const awaitingRealtimeRecovery = recoveredDraftAwaitingRealtimeRef.current;
+    canvasConflictDraftStore.write(canvasId, committedDocument);
+    if (pendingRemoteDocument && !mergeResolved) {
+      onLocalSaveBlockedChangeRef.current(canvasId, true);
+      setLocalValidationError("Local and remote canvas changes exceed the shared size limit. Remove content to finish merging.");
+    } else if (awaitingRealtimeRecovery) {
+      onLocalSaveBlockedChangeRef.current(canvasId, true);
+      setLocalValidationError("Recovered local canvas changes are waiting for realtime synchronization.");
+    } else {
+      pendingRemoteDocumentRef.current = null;
+      if (pendingRemoteDocument) {
+        onLocalSaveBlockedChangeRef.current(canvasId, true);
+      }
+      setLocalValidationError(null);
+    }
+    documentRef.current = committedDocument;
     setDocument((currentDocument) => {
       if (recordHistory) {
         setHistory((current) => [...current.slice(-39), currentDocument]);
         setRedoHistory([]);
       }
-      return stampedDocument;
+      return committedDocument;
     });
 
-    if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = window.setTimeout(() => {
+    if (mergeResolved && !awaitingRealtimeRecovery) {
+      if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = window.setTimeout(flushCanvasSave, 350);
+    } else if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
       saveTimerRef.current = null;
-      snapshotMapRef.current?.set("snapshot", documentRef.current);
-      onStateChangeRef.current(documentRef.current);
-    }, 350);
+    }
+    return true;
   }
 
   function applyDraftDocument(nextDocument: CanvasDocument) {
@@ -1126,7 +1526,7 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
     if (updateState) setDragPreview(null);
   }
 
-  function commitDragPreview(dragState: Extract<DragState, { type: "move" | "resize" }>, recordHistory: boolean) {
+  function commitDragPreview(dragState: Extract<DragState, { type: "lineEndpoint" | "move" | "resize" }>, recordHistory: boolean) {
     const preview = dragPreviewRef.current;
     if (!preview) return;
     const changedShapes = dragState.type === "move" && preview.type === "move"
@@ -1167,7 +1567,7 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
   function addShape(type: CanvasShapeType, point: CanvasPoint, snapDisabled = false) {
     if (readOnly) return;
     const nextShape = createShape(type, snapPoint(point, document, snapDisabled), { name: getNextShapeName(document.shapes, type) });
-    commitDocument({ ...document, shapes: [...document.shapes, nextShape] });
+    if (!commitDocument({ ...document, shapes: [...document.shapes, nextShape] })) return;
     setSelectedIds([nextShape.id]);
     setActiveToolId("select");
   }
@@ -1186,7 +1586,7 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
       x: snapNumber(shape.x + 24, document),
       y: snapNumber(shape.y + 24, document)
     }));
-    commitDocument({ ...document, shapes: [...document.shapes, ...pastedShapes] });
+    if (!commitDocument({ ...document, shapes: [...document.shapes, ...pastedShapes] })) return;
     clipboardRef.current = pastedShapes;
     setSelectedIds(pastedShapes.map((shape) => shape.id));
   }
@@ -1195,7 +1595,7 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
     if (readOnly || selectedIds.length === 0) return;
     copySelectedShapes();
     const selectedSet = new Set(selectedIds);
-    commitDocument({ ...document, shapes: document.shapes.filter((shape) => !selectedSet.has(shape.id) || shape.isLocked) });
+    if (!commitDocument({ ...document, shapes: document.shapes.filter((shape) => !selectedSet.has(shape.id) || shape.isLocked) })) return;
     setSelectedIds((current) => current.filter((id) => document.shapes.some((shape) => shape.id === id && shape.isLocked)));
   }
 
@@ -1217,19 +1617,20 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
       setEditingText(null);
       return;
     }
-    commitDocument({
+    const committed = commitDocument({
       ...document,
       shapes: document.shapes.map((shape) => {
         if (shape.id !== editingText.id || shape.isLocked) return shape;
-        return { ...shape, text: editingText.text };
+        return resizeShapeToTextContent(shape, editingText.text);
       })
     });
-    setEditingText(null);
+    if (committed) setEditingText(null);
   }
 
   function handlePointerDown(event: PointerEvent<HTMLDivElement>) {
     if (event.button !== 0 || isEditableTarget(event.target)) return;
     clearDragPreview();
+    setShapePreview(null);
     updatePointerPresence(event);
     const point = getPointerPoint(event, document.viewport);
 
@@ -1237,9 +1638,15 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
       return;
     }
 
-    if (activeToolId !== "select" && activeToolId !== "hand") {
-      const type = activeToolId === "rectangle" ? "rectangle" : activeToolId === "ellipse" ? "ellipse" : activeToolId === "line" ? "line" : activeToolId === "arrow" ? "arrow" : activeToolId === "note" ? "note" : "text";
-      addShape(type, point, event.altKey);
+    const shapeToolType = getShapeToolType(activeToolId);
+    if (shapeToolType) {
+      const start = shapeToolType === "line" || shapeToolType === "arrow"
+        ? getSnappedLinePoint(document.shapes, point, document, document.viewport, event.altKey)
+        : snapPoint(point, document, event.altKey);
+      dragStateRef.current = { document, origin: start, shapeType: shapeToolType, target: start, type: "draw", viewport: document.viewport };
+      if (shapeToolType === "line" || shapeToolType === "arrow") {
+        setConnectionPreview({ kind: shapeToolType, source: start, target: start });
+      }
       return;
     }
 
@@ -1248,7 +1655,15 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
       if (connectionHandle) {
         const start = getConnectionHandlePoints(selectedShape)[connectionHandle];
         dragStateRef.current = { document, sourceId: selectedShape.id, start, target: point, type: "connect", viewport: document.viewport };
-        setConnectionPreview({ source: start, target: point });
+        setConnectionPreview({ kind: "arrow", source: start, target: point });
+        return;
+      }
+    }
+
+    if (activeToolId === "select" && selectedShape && !selectedShape.isLocked && (selectedShape.type === "arrow" || selectedShape.type === "line")) {
+      const endpoint = getLineEndpointAtPoint(selectedShape, point, document.viewport);
+      if (endpoint) {
+        dragStateRef.current = { document, end: endpoint, id: selectedShape.id, type: "lineEndpoint", viewport: document.viewport };
         return;
       }
     }
@@ -1321,8 +1736,29 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
 
     if (dragState.type === "connect") {
       const target = getConnectionTargetPoint(documentRef.current.shapes, dragState.sourceId, point, dragState.viewport) ?? point;
-      setConnectionPreview({ source: dragState.start, target });
+      setConnectionPreview({ kind: "arrow", source: dragState.start, target });
       dragStateRef.current = { ...dragState, target };
+      return;
+    }
+
+    if (dragState.type === "draw") {
+      const target = dragState.shapeType === "line" || dragState.shapeType === "arrow"
+        ? getSnappedLinePoint(documentRef.current.shapes, point, dragState.document, dragState.viewport, event.altKey)
+        : snapPoint(point, dragState.document, event.altKey);
+      if (dragState.shapeType === "line" || dragState.shapeType === "arrow") {
+        setConnectionPreview({ kind: dragState.shapeType, source: dragState.origin, target });
+      } else {
+        setShapePreview({ shape: createDrawnShape(dragState.shapeType, dragState.origin, target, documentRef.current.shapes) });
+      }
+      dragStateRef.current = { ...dragState, target };
+      return;
+    }
+
+    if (dragState.type === "lineEndpoint") {
+      const lineShape = dragState.document.shapes.find((shape) => shape.id === dragState.id);
+      if (!lineShape) return;
+      const target = getSnappedLinePoint(documentRef.current.shapes, point, dragState.document, dragState.viewport, event.altKey);
+      scheduleDragPreview({ shapes: { [dragState.id]: moveLineEndpoint(lineShape, dragState.end, target) }, type: "resize" });
       return;
     }
 
@@ -1365,31 +1801,49 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
         size: defaultLineSize,
         w: Math.round(dragState.target.x - dragState.start.x)
       });
-      commitDocument({ ...documentRef.current, shapes: [...documentRef.current.shapes, arrowShape] });
+      if (!commitDocument({ ...documentRef.current, shapes: [...documentRef.current.shapes, arrowShape] })) return;
       setSelectedIds([arrowShape.id]);
       return;
     }
+    if (dragState.type === "draw") {
+      setConnectionPreview(null);
+      setShapePreview(null);
+      if (!isDrawGestureLarge(dragState.shapeType, dragState.origin, dragState.target)) {
+        addShape(dragState.shapeType, dragState.origin, true);
+        return;
+      }
+      const drawnShape = createDrawnShape(dragState.shapeType, dragState.origin, dragState.target, documentRef.current.shapes);
+      if (!commitDocument({ ...documentRef.current, shapes: [...documentRef.current.shapes, drawnShape] })) return;
+      setSelectedIds([drawnShape.id]);
+      setActiveToolId("select");
+      if (drawnShape.type === "text") setEditingText({ id: drawnShape.id, text: drawnShape.text });
+      return;
+    }
     if (dragState.type === "select") return;
-    if (dragState.type === "move" || dragState.type === "resize") {
+    if (dragState.type === "move" || dragState.type === "resize" || dragState.type === "lineEndpoint") {
       commitDragPreview(dragState, true);
       return;
     }
-    if (documentRef.current !== dragState.document) commitDocument(documentRef.current, dragState.type !== "pan");
+    if (documentRef.current !== dragState.document && !commitDocument(documentRef.current, dragState.type !== "pan")) {
+      applyDraftDocument(dragState.document);
+    }
   }
 
   function runEditorAction(action: CanvasEditorAction) {
     if (action === "undo" && history.length > 0) {
       const previous = history[history.length - 1];
-      setRedoHistory((current) => [document, ...current.slice(0, 39)]);
-      setHistory((current) => current.slice(0, -1));
-      commitDocument(previous, false);
+      if (commitDocument(previous, false)) {
+        setRedoHistory((current) => [document, ...current.slice(0, 39)]);
+        setHistory((current) => current.slice(0, -1));
+      }
     }
 
     if (action === "redo" && redoHistory.length > 0) {
       const next = redoHistory[0];
-      setHistory((current) => [...current.slice(-39), document]);
-      setRedoHistory((current) => current.slice(1));
-      commitDocument(next, false);
+      if (commitDocument(next, false)) {
+        setHistory((current) => [...current.slice(-39), document]);
+        setRedoHistory((current) => current.slice(1));
+      }
     }
 
     if (action === "zoomIn") commitDocument({ ...document, viewport: { ...document.viewport, zoom: Math.min(2.5, document.viewport.zoom + 0.1) } }, false);
@@ -1401,11 +1855,16 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
   }
 
   function runContextAction(action: CanvasContextAction, point: CanvasPoint | null) {
+    const hostBounds = hostRef.current?.getBoundingClientRect();
+    const insertionPoint = point ?? snapPoint({
+      x: ((hostBounds?.width ?? 720) / 2 - document.viewport.panX) / document.viewport.zoom,
+      y: ((hostBounds?.height ?? 480) / 2 - document.viewport.panY) / document.viewport.zoom
+    }, document);
     if (action === "resetZoom") runEditorAction("zoomReset");
     if (action === "selectAll") setSelectedIds(document.shapes.filter((shape) => !shape.isHidden).map((shape) => shape.id));
-    if (!point && (action === "addRectangle" || action === "addText")) return;
-    if (action === "addRectangle" && point) addShape("rectangle", point);
-    if (action === "addText" && point) addShape("text", point);
+    if (action === "addRectangle") addShape("rectangle", insertionPoint);
+    if (action === "addText") addShape("text", insertionPoint);
+    if (action === "addNote") addShape("note", insertionPoint);
     if (action === "bringForward") runInspectorAction("bringForward");
     if (action === "delete") runInspectorAction("delete");
     if (action === "duplicate") runInspectorAction("duplicate");
@@ -1416,15 +1875,22 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
     if (readOnly || selectedIds.length === 0) return;
     const selectedSet = new Set(selectedIds);
 
+    if (action === "alignLeft" || action === "alignCenter" || action === "alignRight" || action === "distributeHorizontal" || action === "distributeVertical") {
+      const movableShapes = document.shapes.filter((shape) => selectedSet.has(shape.id) && !shape.isLocked);
+      const alignedShapes = alignCanvasShapes(movableShapes, action);
+      commitDocument({ ...document, shapes: document.shapes.map((shape) => alignedShapes.get(shape.id) ?? shape) });
+      return;
+    }
+
     if (action === "delete") {
-      commitDocument({ ...document, shapes: document.shapes.filter((shape) => !selectedSet.has(shape.id) || shape.isLocked) });
+      if (!commitDocument({ ...document, shapes: document.shapes.filter((shape) => !selectedSet.has(shape.id) || shape.isLocked) })) return;
       setSelectedIds(document.shapes.filter((shape) => selectedSet.has(shape.id) && shape.isLocked).map((shape) => shape.id));
       return;
     }
 
     if (action === "duplicate") {
       const duplicates = document.shapes.filter((shape) => selectedSet.has(shape.id)).map((shape) => ({ ...shape, id: createShapeId(), name: `${shape.name} copy`, x: snapNumber(shape.x + 24, document), y: snapNumber(shape.y + 24, document) }));
-      commitDocument({ ...document, shapes: [...document.shapes, ...duplicates] });
+      if (!commitDocument({ ...document, shapes: [...document.shapes, ...duplicates] })) return;
       setSelectedIds(duplicates.map((shape) => shape.id));
       return;
     }
@@ -1498,7 +1964,7 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
       return;
     }
 
-    commitDocument({
+    const committed = commitDocument({
       ...document,
       shapes: document.shapes.map((shape) => {
         if (shape.id !== shapeId) return shape;
@@ -1508,7 +1974,7 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
         return { ...shape, isLocked: false };
       })
     });
-    if (action === "hide") setSelectedIds((current) => current.filter((id) => id !== shapeId));
+    if (committed && action === "hide") setSelectedIds((current) => current.filter((id) => id !== shapeId));
   }
 
   function renameLayer(shapeId: string, name: string) {
@@ -1544,6 +2010,26 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
         }
         setSelectedIds([]);
         setSelectionBox(null);
+      }
+
+      if (!commandKey) {
+        const toolShortcuts: Partial<Record<string, CanvasToolId>> = {
+          a: "arrow",
+          d: "diamond",
+          h: "hand",
+          l: "line",
+          n: "note",
+          o: "ellipse",
+          r: "rectangle",
+          t: "text",
+          v: "select"
+        };
+        const shortcutTool = toolShortcuts[event.key.toLowerCase()];
+        if (shortcutTool && (!readOnly || shortcutTool === "select" || shortcutTool === "hand")) {
+          event.preventDefault();
+          setActiveToolId(shortcutTool);
+          return;
+        }
       }
 
       if (readOnly) return;
@@ -1629,8 +2115,9 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
   const editingShape = editingText ? renderedShapes.find((shape) => shape.id === editingText.id) ?? document.shapes.find((shape) => shape.id === editingText.id) ?? null : null;
 
   return (
-    <CanvasEditorShell activeToolId={activeToolId} onContextAction={runContextAction} onEditorAction={runEditorAction} onLayerAction={runLayerAction} onLayerRename={renameLayer} onNumberChange={updateShapeNumber} onSelectShape={selectShape} onSelectTool={selectTool} onSnapToggle={toggleSnap} onStyleChange={updateStyle} readOnly={readOnly} selectedShape={renderedSelectedShape} selectedShapes={renderedSelectedShapes} shapes={renderedShapes} stats={stats} viewport={document.viewport}>
+    <CanvasEditorShell activeToolId={activeToolId} onContextAction={runContextAction} onEditorAction={runEditorAction} onInspectorAction={runInspectorAction} onLayerAction={runLayerAction} onLayerRename={renameLayer} onNumberChange={updateShapeNumber} onSelectShape={selectShape} onSelectTool={selectTool} onSnapToggle={toggleSnap} onStyleChange={updateStyle} readOnly={readOnly} selectedShape={renderedSelectedShape} selectedShapes={renderedSelectedShapes} shapes={renderedShapes} stats={stats} viewport={document.viewport}>
       <div className="real-canvas-host realtime-document-host" onDoubleClick={handleDoubleClick} onPointerDown={handlePointerDown} onPointerLeave={handlePointerUp} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} ref={hostRef}>
+        {validationError && <strong className="canvas-validation-error">{validationError}</strong>}
         <svg className="native-canvas">
           <g transform={`translate(${document.viewport.panX} ${document.viewport.panY}) scale(${document.viewport.zoom})`}>
             <rect className="native-canvas-page" height={canvasHeight} width={canvasWidth} x="0" y="0" />
@@ -1648,12 +2135,20 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
               <RemoteSelectionNode key={selection.user.id} selection={selection} />
             ))}
             {selectionBox && <rect className="native-canvas-box-selection" fill="rgba(82, 169, 255, 0.1)" height={selectionBox.h} stroke="#52a9ff" width={selectionBox.w} x={selectionBox.x} y={selectionBox.y} />}
+            {shapePreview && (
+              <g className="native-canvas-draw-preview" pointerEvents="none">
+                <CanvasShapeNode editingShapeId={null} selected shape={shapePreview.shape} />
+              </g>
+            )}
             {connectionPreview && <CanvasConnectionPreview preview={connectionPreview} />}
             {!editingText && !readOnly && activeToolId === "select" && renderedSelectedShape && !renderedSelectedShape.isLocked && isConnectableShape(renderedSelectedShape) && (
               <CanvasConnectionHandles shape={renderedSelectedShape} zoom={document.viewport.zoom} />
             )}
             {!editingText && !readOnly && activeToolId === "select" && renderedSelectedShape && !renderedSelectedShape.isLocked && resizableShapeTypes.has(renderedSelectedShape.type) && (
               <CanvasResizeHandles shape={renderedSelectedShape} zoom={document.viewport.zoom} />
+            )}
+            {!editingText && !readOnly && activeToolId === "select" && renderedSelectedShape && !renderedSelectedShape.isLocked && (renderedSelectedShape.type === "arrow" || renderedSelectedShape.type === "line") && (
+              <CanvasLineEndpointHandles shape={renderedSelectedShape} zoom={document.viewport.zoom} />
             )}
           </g>
         </svg>
@@ -1668,7 +2163,7 @@ export function CollaborativeCanvas({ canvasId, initialState, onStateChange, onP
                 event.preventDefault();
                 finishTextEditing(false);
               }
-              if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+              if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
                 finishTextEditing(true);
               }
@@ -1716,6 +2211,7 @@ function CanvasShapeNode({ editingShapeId, selected, shape }: { editingShapeId: 
     <g className={selected ? "native-canvas-shape selected" : "native-canvas-shape"}>
       {shape.type === "rectangle" && <rect fill={getFill(shape)} height={shape.h} rx="8" {...commonProps} width={shape.w} x={shape.x} y={shape.y} />}
       {shape.type === "ellipse" && <ellipse cx={shape.x + shape.w / 2} cy={shape.y + shape.h / 2} fill={getFill(shape)} rx={Math.abs(shape.w / 2)} ry={Math.abs(shape.h / 2)} {...commonProps} />}
+      {isPolygonShape(shape) && <polygon fill={getFill(shape)} points={getPolygonPointString(shape)} {...commonProps} />}
       {shape.type === "note" && <rect fill={getFill({ ...shape, fill: shape.fill === "none" ? "solid" : shape.fill })} height={shape.h} rx="8" {...commonProps} width={shape.w} x={shape.x} y={shape.y} />}
       {(shape.type === "line" || shape.type === "arrow") && <line x1={shape.x} x2={shape.x + shape.w} y1={shape.y} y2={shape.y + shape.h} {...commonProps} />}
       {shape.type === "arrow" && <ArrowHead shape={shape} />}
@@ -1765,7 +2261,7 @@ function CanvasConnectionPreview({ preview }: { preview: ConnectionPreview }) {
     size: defaultLineSize,
     text: "",
     textAlign: "left",
-    type: "arrow",
+    type: preview.kind,
     updatedAt: 0,
     w: preview.target.x - preview.source.x,
     x: preview.source.x,
@@ -1774,14 +2270,14 @@ function CanvasConnectionPreview({ preview }: { preview: ConnectionPreview }) {
   return (
     <g className="native-canvas-connection-preview" pointerEvents="none">
       <line x1={shape.x} x2={shape.x + shape.w} y1={shape.y} y2={shape.y + shape.h} />
-      <ArrowHead shape={shape} />
+      {preview.kind === "arrow" && <ArrowHead shape={shape} />}
     </g>
   );
 }
 
 function CanvasConnectionHandles({ shape, zoom }: { shape: CanvasShape; zoom: number }) {
   const handlePoints = getConnectionHandlePoints(shape);
-  const size = 9 / zoom;
+  const size = 8 / zoom;
   return (
     <g className="native-canvas-connection-handles">
       {(Object.keys(handlePoints) as ConnectionHandle[]).map((handle) => {
@@ -1792,9 +2288,22 @@ function CanvasConnectionHandles({ shape, zoom }: { shape: CanvasShape; zoom: nu
   );
 }
 
+function CanvasLineEndpointHandles({ shape, zoom }: { shape: CanvasShape; zoom: number }) {
+  const endpoints = getLineEndpoints(shape);
+  const size = 8 / zoom;
+  return (
+    <g className="native-canvas-connection-handles">
+      {(Object.keys(endpoints) as LineEndpoint[]).map((endpoint) => {
+        const point = endpoints[endpoint];
+        return <circle className={`native-canvas-connection-handle native-canvas-line-endpoint-${endpoint}`} cx={point.x} cy={point.y} key={endpoint} r={size / 2} />;
+      })}
+    </g>
+  );
+}
+
 function CanvasResizeHandles({ shape, zoom }: { shape: CanvasShape; zoom: number }) {
   const handlePoints = getResizeHandlePoints(shape);
-  const size = 8 / zoom;
+  const size = 7 / zoom;
   return (
     <>
       {cornerResizeHandleOrder.map((handle) => {

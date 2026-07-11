@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshIcon } from "@/components/Icons";
 
 type DocumentSnapshotSummary = {
@@ -27,7 +27,9 @@ function formatRelativeTime(isoDate: string) {
 }
 
 export function DocumentHistoryPanel({ canEdit, documentId, onRestore }: DocumentHistoryPanelProps) {
+  const controlRef = useRef<HTMLButtonElement | null>(null);
   const [open, setOpen] = useState(false);
+  const [menuPosition, setMenuPosition] = useState({ right: 0, top: 0 });
   const [snapshots, setSnapshots] = useState<DocumentSnapshotSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -65,6 +67,27 @@ export function DocumentHistoryPanel({ canEdit, documentId, onRestore }: Documen
     }
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+
+    function updateMenuPosition() {
+      const controlRect = controlRef.current?.getBoundingClientRect();
+      if (!controlRect) return;
+      setMenuPosition({
+        right: Math.max(16, window.innerWidth - controlRect.right),
+        top: controlRect.bottom + 8
+      });
+    }
+
+    updateMenuPosition();
+    window.addEventListener("resize", updateMenuPosition);
+    window.addEventListener("scroll", updateMenuPosition, true);
+    return () => {
+      window.removeEventListener("resize", updateMenuPosition);
+      window.removeEventListener("scroll", updateMenuPosition, true);
+    };
   }, [open]);
 
   async function saveVersion() {
@@ -110,11 +133,11 @@ export function DocumentHistoryPanel({ canEdit, documentId, onRestore }: Documen
 
   return (
     <div className="history-wrap">
-      <button aria-label="Document versions" className="icon-control history-control" disabled={!documentId} onClick={() => setOpen((current) => !current)} title="Document versions">
+      <button ref={controlRef} aria-label="Document versions" className="icon-control history-control" disabled={!documentId} onClick={() => setOpen((current) => !current)} title="Document versions">
         <RefreshIcon />
       </button>
       {open && (
-        <div className="history-menu">
+        <div className="history-menu" style={{ right: menuPosition.right, top: menuPosition.top }}>
           <strong>Document history</strong>
           {canEdit && (
             <div className="history-save-form">

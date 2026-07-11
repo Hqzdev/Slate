@@ -1,8 +1,9 @@
 "use client";
 
 import Editor, { type OnMount } from "@monaco-editor/react";
-import { MouseEvent, useEffect, useMemo, useRef, useState } from "react";
+import { MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LiveCursors, type LiveCursor } from "@/components/LiveCursors";
+import { fetchRealtimeGrant } from "@/lib/client/realtimeGrant";
 import { type RealtimeConnectionStatus, watchRealtimeConnection } from "@/lib/client/realtimeConnection";
 import { MonacoBinding } from "y-monaco";
 import { WebsocketProvider } from "y-websocket";
@@ -13,10 +14,12 @@ type CollaborativeEditorProps = {
   fileName: string;
   initialValue: string;
   language: string;
+  onCommentSelectionChange: (selection: EditorCommentSelection | null) => void;
   onContentChange: (content: string) => void;
   onPresenceChange: (users: PresenceUser[]) => void;
   onRealtimeStatusChange: (status: RealtimeConnectionStatus) => void;
   readOnly: boolean;
+  registerDocumentFlush: (documentId: string, flush: () => void) => () => void;
   roomName: string;
   theme: "dark" | "light";
   user: {
@@ -26,6 +29,11 @@ type CollaborativeEditorProps = {
     name: string;
     role: string;
   };
+};
+
+export type EditorCommentSelection = {
+  endLine: number;
+  startLine: number;
 };
 
 export type PresenceUser = {
@@ -46,12 +54,14 @@ type AwarenessState = {
 
 const syncUrl = process.env.NEXT_PUBLIC_SYNC_URL ?? "ws://127.0.0.1:1234";
 
-export function CollaborativeEditor({ documentId, fileName, initialValue, language, onContentChange, onPresenceChange, onRealtimeStatusChange, readOnly, roomName, theme, user }: CollaborativeEditorProps) {
+export function CollaborativeEditor({ documentId, fileName, initialValue, language, onCommentSelectionChange, onContentChange, onPresenceChange, onRealtimeStatusChange, readOnly, registerDocumentFlush, roomName, theme, user }: CollaborativeEditorProps) {
   const roomKey = useMemo(() => `slate:room:${roomName}:file:${documentId}`, [documentId, roomName]);
   const [cursors, setCursors] = useState<LiveCursor[]>([]);
+  const commentSelectionChangeRef = useRef(onCommentSelectionChange);
   const contentChangeRef = useRef(onContentChange);
   const latestContentRef = useRef(initialValue);
   const pendingSaveRef = useRef(false);
+  const presenceChangeRef = useRef(onPresenceChange);
   const providerRef = useRef<WebsocketProvider | null>(null);
   const realtimeStatusChangeRef = useRef(onRealtimeStatusChange);
   const remoteStyleRef = useRef<HTMLStyleElement | null>(null);
@@ -62,8 +72,28 @@ export function CollaborativeEditor({ documentId, fileName, initialValue, langua
   }, [onContentChange]);
 
   useEffect(() => {
+    commentSelectionChangeRef.current = onCommentSelectionChange;
+  }, [onCommentSelectionChange]);
+
+  useEffect(() => {
     realtimeStatusChangeRef.current = onRealtimeStatusChange;
   }, [onRealtimeStatusChange]);
+
+  useEffect(() => {
+    presenceChangeRef.current = onPresenceChange;
+  }, [onPresenceChange]);
+
+  const flushContentSave = useCallback(() => {
+    if (!pendingSaveRef.current) return;
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    pendingSaveRef.current = false;
+    contentChangeRef.current(latestContentRef.current);
+  }, []);
+
+  useEffect(() => registerDocumentFlush(documentId, flushContentSave), [documentId, flushContentSave, registerDocumentFlush]);
 
   function updatePointer(event: MouseEvent<HTMLDivElement>) {
     const provider = providerRef.current;
@@ -85,12 +115,12 @@ export function CollaborativeEditor({ documentId, fileName, initialValue, langua
       inherit: true,
       rules: [],
       colors: {
-        "editor.background": "#0e0e11",
-        "editor.lineHighlightBackground": "#17171b",
-        "editorLineNumber.foreground": "#3f3f46",
-        "editorLineNumber.activeForeground": "#a1a1aa",
-        "editorCursor.foreground": "#fafafa",
-        "editor.selectionBackground": "#2563eb55"
+        "editor.background": "#131110",
+        "editor.lineHighlightBackground": "#1c1917",
+        "editorLineNumber.foreground": "#44403c",
+        "editorLineNumber.activeForeground": "#a8a29e",
+        "editorCursor.foreground": "#fafaf9",
+        "editor.selectionBackground": "#3ba6f155"
       }
     });
     monaco.editor.defineTheme("slate-light", {
@@ -98,12 +128,12 @@ export function CollaborativeEditor({ documentId, fileName, initialValue, langua
       inherit: true,
       rules: [],
       colors: {
-        "editor.background": "#fbfcff",
-        "editor.lineHighlightBackground": "#eef4ff",
-        "editorLineNumber.foreground": "#94a3b8",
-        "editorLineNumber.activeForeground": "#475569",
-        "editorCursor.foreground": "#0f172a",
-        "editor.selectionBackground": "#bfdbfe"
+        "editor.background": "#ffffff",
+        "editor.lineHighlightBackground": "#f5f5f4",
+        "editorLineNumber.foreground": "#a8a29e",
+        "editorLineNumber.activeForeground": "#57534e",
+        "editorCursor.foreground": "#0c0a09",
+        "editor.selectionBackground": "#c1e1f7"
       }
     });
     monaco.editor.setTheme(`slate-${theme}`);
@@ -111,20 +141,12 @@ export function CollaborativeEditor({ documentId, fileName, initialValue, langua
     const doc = new Y.Doc();
     const text = doc.getText("source");
 
-    const provider = new WebsocketProvider(syncUrl, roomKey, doc, { maxBackoffTime: 2500, resyncInterval: 5000 });
-    providerRef.current = provider;
-    new MonacoBinding(text, model, new Set([editor]), provider.awareness);
-    const unwatchRealtimeConnection = watchRealtimeConnection(provider, (status) => realtimeStatusChangeRef.current(status));
-
-    provider.awareness.setLocalStateField("user", {
-      color: user.color,
-      id: user.id,
-      initials: user.initials,
-      name: user.name,
-      role: user.role
-    });
+    let disposed = false;
+    let provider: WebsocketProvider | null = null;
+    let unwatchRealtimeConnection: (() => void) | null = null;
 
     const updatePresence = () => {
+      if (!provider) return;
       const stateEntries = Array.from(provider.awareness.getStates().entries());
       const states = stateEntries.map(([, state]) => state);
       const users = states
@@ -134,17 +156,11 @@ export function CollaborativeEditor({ documentId, fileName, initialValue, langua
         });
 
       updateRemoteSelectionStyles(stateEntries, doc.clientID, remoteStyleRef);
-      onPresenceChange(Array.from(new Map(users.map((presenceUser) => [presenceUser.id, presenceUser])).values()));
+      presenceChangeRef.current(Array.from(new Map(users.map((presenceUser) => [presenceUser.id, presenceUser])).values()));
       setCursors(states.flatMap((state) => {
         if (!state.user?.id || !state.pointer) return [];
         return [{ x: state.pointer.x, y: state.pointer.y, user: state.user }];
       }));
-    };
-
-    const flushContentSave = () => {
-      if (!pendingSaveRef.current) return;
-      pendingSaveRef.current = false;
-      contentChangeRef.current(latestContentRef.current);
     };
 
     const handleDocUpdate = () => {
@@ -162,34 +178,56 @@ export function CollaborativeEditor({ documentId, fileName, initialValue, langua
     };
 
     const handlePageHide = () => {
-      if (saveTimerRef.current) {
-        window.clearTimeout(saveTimerRef.current);
-        saveTimerRef.current = null;
-      }
       flushContentSave();
     };
 
+    const selectionSubscription = editor.onDidChangeCursorSelection(({ selection }) => {
+      if (model.getValueInRange(selection).length === 0) {
+        commentSelectionChangeRef.current(null);
+        return;
+      }
+
+      commentSelectionChangeRef.current({
+        endLine: Math.max(selection.startLineNumber, selection.endLineNumber),
+        startLine: Math.min(selection.startLineNumber, selection.endLineNumber)
+      });
+    });
+
     doc.on("update", handleDocUpdate);
-    provider.awareness.on("change", updatePresence);
     window.addEventListener("pagehide", handlePageHide);
-    window.setTimeout(updatePresence, 0);
+
+    void fetchRealtimeGrant(roomKey).then((grant) => {
+      if (disposed) return;
+      provider = new WebsocketProvider(syncUrl, roomKey, doc, { maxBackoffTime: 2500, params: { grant }, resyncInterval: 5000 });
+      providerRef.current = provider;
+      new MonacoBinding(text, model, new Set([editor]), provider.awareness);
+      unwatchRealtimeConnection = watchRealtimeConnection(provider, (status) => realtimeStatusChangeRef.current(status));
+      provider.awareness.setLocalStateField("user", {
+        color: user.color,
+        id: user.id,
+        initials: user.initials,
+        name: user.name,
+        role: user.role
+      });
+      provider.awareness.on("change", updatePresence);
+      window.setTimeout(updatePresence, 0);
+    }).catch(() => realtimeStatusChangeRef.current("offline"));
 
     editor.onDidDispose(() => {
-      if (saveTimerRef.current) {
-        window.clearTimeout(saveTimerRef.current);
-        saveTimerRef.current = null;
-      }
+      disposed = true;
       flushContentSave();
       window.removeEventListener("pagehide", handlePageHide);
+      selectionSubscription.dispose();
+      commentSelectionChangeRef.current(null);
       doc.off("update", handleDocUpdate);
-      provider.awareness.off("change", updatePresence);
-      unwatchRealtimeConnection();
-      onPresenceChange([]);
+      provider?.awareness.off("change", updatePresence);
+      unwatchRealtimeConnection?.();
+      presenceChangeRef.current([]);
       setCursors([]);
       remoteStyleRef.current?.remove();
       remoteStyleRef.current = null;
       providerRef.current = null;
-      provider.destroy();
+      provider?.destroy();
       doc.destroy();
     });
   };
@@ -197,7 +235,7 @@ export function CollaborativeEditor({ documentId, fileName, initialValue, langua
   return (
     <div className="realtime-document-host" onMouseMove={updatePointer}>
       <Editor
-        key={`${roomName}:${fileName}:${theme}`}
+        key={`${roomName}:${documentId}:${theme}`}
         defaultLanguage={language}
         defaultValue={initialValue}
         onMount={handleMount}

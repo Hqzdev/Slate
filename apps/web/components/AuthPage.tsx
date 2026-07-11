@@ -1,12 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useState, useSyncExternalStore } from "react";
+import { FormEvent, ReactNode, useState, useSyncExternalStore } from "react";
 import { BrandMark } from "@/components/BrandMark";
 
 type AuthPageProps = {
   mode: "login" | "register";
-  title: string;
+  title: ReactNode;
   subtitle: string;
   submitLabel: string;
   submittingLabel: string;
@@ -42,6 +42,7 @@ function getServerNextSnapshot() {
 }
 
 export function AuthPage(props: AuthPageProps) {
+  const isRegister = props.mode === "register";
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const invite = useSyncExternalStore(subscribeUrlChange, getInviteSnapshot, getServerInviteSnapshot);
@@ -79,51 +80,91 @@ export function AuthPage(props: AuthPageProps) {
   }
 
   return (
-    <main className="auth-shell">
+    <main className="auth-shell slate-auth monad-auth">
       <header className="auth-header">
-        <BrandMark href="/" />
+        <div className="auth-header-inner">
+          <BrandMark href="/" />
+          <Link className="auth-back-link" href="/">
+            Back to site <span aria-hidden="true">↗</span>
+          </Link>
+        </div>
       </header>
       <section className="auth-main">
-        <div className="auth-panel">
-          <h1>{props.title}</h1>
-          <p>{props.subtitle}</p>
-          <form className="auth-form" onSubmit={handleSubmit}>
-            {props.mode === "register" && (
+        <div className={`auth-experience auth-experience-${props.mode}`}>
+          <div className="auth-panel">
+            <div className="auth-kicker">{isRegister ? "New workspace" : "Welcome back"}</div>
+            <h1>{props.title}</h1>
+            <p>{props.subtitle}</p>
+            <form className="auth-form" onSubmit={handleSubmit}>
+              {isRegister && (
+                <label>
+                  <span>Name</span>
+                  <input required name="name" type="text" placeholder="Ada Kim" />
+                </label>
+              )}
               <label>
-                <span>Name</span>
-                <input required name="name" type="text" placeholder="Ada Kim" />
+                <span>Email</span>
+                <input required name="email" type="email" placeholder="you@company.com" />
               </label>
-            )}
-            <label>
-              <span>Email</span>
-              <input required name="email" type="email" placeholder="you@company.com" />
-            </label>
-            <label>
-              <span className="label-row">
-                Password
-                {props.mode === "login" && <a href="#forgot">Forgot password?</a>}
-              </span>
-              <input required minLength={props.mode === "register" ? 8 : undefined} name="password" type="password" placeholder={props.mode === "register" ? "8+ characters" : "••••••••"} />
-            </label>
-            {props.mode === "register" && (
-              <label className="terms-row">
-                <input required type="checkbox" />
-                <span>
-                  I agree to the <a href="#terms">Terms of Service</a> and <a href="#privacy">Privacy Policy</a>.
+              <label>
+                <span className="label-row">
+                  Password
+                  {!isRegister && <a href="#forgot">Forgot password?</a>}
                 </span>
+                <input required minLength={isRegister ? 8 : undefined} name="password" type="password" placeholder={isRegister ? "8+ characters" : "Password"} />
               </label>
-            )}
-            <button className="dark-button" disabled={submitting} type="submit">
-              {submitting ? props.submittingLabel : props.submitLabel}
-            </button>
-            {error && <strong className="auth-error">{error}</strong>}
-          </form>
-          <p className="auth-footer">
-            {props.footerText} <Link href={footerHref}>{props.footerLabel}</Link>
-          </p>
-          {props.mode === "login" && (
-            <div className="secure-note">Sessions are encrypted and scoped to your workspace.</div>
-          )}
+              {isRegister && (
+                <label className="terms-row">
+                  <input required type="checkbox" />
+                  <span>
+                    I agree to the <a href="#terms">Terms of Service</a> and <a href="#privacy">Privacy Policy</a>.
+                  </span>
+                </label>
+              )}
+              <button className="dark-button auth-submit" disabled={submitting} type="submit">
+                {submitting ? props.submittingLabel : props.submitLabel}
+              </button>
+              {error && (
+                <div className="auth-error" role="alert">
+                  <strong>{error}</strong>
+                  <span>Check your details and try again.</span>
+                </div>
+              )}
+            </form>
+            <p className="auth-footer">
+              {props.footerText} <Link href={footerHref}>{props.footerLabel}</Link>
+            </p>
+            <div className="secure-note">{isRegister ? "Private workspace, realtime editing, execution sandbox." : "Sessions are encrypted and scoped to your workspace."}</div>
+          </div>
+          <aside className="auth-journal" aria-label={isRegister ? "Slate workspace model" : "Slate workspace context"}>
+            <div className="auth-journal-copy">
+              <span>{isRegister ? "A workspace with context intact" : "Return to shared context"}</span>
+              <h2>{isRegister ? "Files, decisions, and execution begin in the same room." : "Continue where the code, canvas, and team left off."}</h2>
+            </div>
+            <div className="auth-room-diagram" aria-label="Slate workspace connects code, canvas, runs, and activity" role="img">
+              <div className="auth-room-wash" />
+              <svg aria-hidden="true" viewBox="0 0 600 420" preserveAspectRatio="none">
+                <path d="M130 88 C224 88 216 204 278 204" />
+                <path d="M130 332 C224 332 216 216 278 216" />
+                <path d="M322 204 C384 204 376 88 470 88" />
+                <path d="M322 216 C384 216 376 332 470 332" />
+              </svg>
+              <span className="auth-room-node auth-room-node-code">Code</span>
+              <span className="auth-room-node auth-room-node-canvas">Canvas</span>
+              <span className="auth-room-node auth-room-node-runs">Runs</span>
+              <span className="auth-room-node auth-room-node-activity">Activity</span>
+              <div className="auth-room-hub">
+                <small>Slate</small>
+                <strong>Room</strong>
+                <span>Live context</span>
+              </div>
+            </div>
+            <div className="auth-journal-index">
+              <span>01 / Realtime</span>
+              <span>02 / Recoverable</span>
+              <span>03 / Role scoped</span>
+            </div>
+          </aside>
         </div>
       </section>
     </main>
@@ -136,7 +177,9 @@ async function readAuthError(response: Response) {
 
   try {
     const body = JSON.parse(text) as { error?: unknown };
-    return typeof body.error === "string" ? body.error : "Authentication failed";
+    if (typeof body.error !== "string") return "Authentication failed";
+    if (body.error === "provider_rejected_request") return "Authentication service unavailable";
+    return body.error;
   } catch {
     return response.status >= 500 ? "Authentication service unavailable" : "Authentication failed";
   }

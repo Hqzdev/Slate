@@ -1,9 +1,11 @@
 "use client";
 
-import { ChangeEvent, MouseEvent, SyntheticEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, CSSProperties, HTMLAttributes, MouseEvent, ReactNode, SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LiveCursors, type LiveCursor } from "@/components/LiveCursors";
+import { fetchRealtimeGrant } from "@/lib/client/realtimeGrant";
 import { type RealtimeConnectionStatus, watchRealtimeConnection } from "@/lib/client/realtimeConnection";
-import rehypeSanitize from "rehype-sanitize";
+import rehypeRaw from "rehype-raw";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { WebsocketProvider } from "y-websocket";
@@ -16,6 +18,7 @@ type CollaborativeNoteProps = {
   onPresenceChange: (users: PresenceUser[]) => void;
   onRealtimeStatusChange: (status: RealtimeConnectionStatus) => void;
   readOnly: boolean;
+  registerDocumentFlush: (documentId: string, flush: () => void) => () => void;
   roomName: string;
   title: string;
   user: {
@@ -45,16 +48,52 @@ type RemoteTextCaret = {
 type NoteMode = "edit" | "preview";
 
 const syncUrl = process.env.NEXT_PUBLIC_SYNC_URL ?? "ws://127.0.0.1:1234";
+const noteColorOptions = [
+  { id: "default", label: "Default", value: "" },
+  { id: "blue", label: "Blue", value: "#3b82f6" },
+  { id: "green", label: "Green", value: "#22c55e" },
+  { id: "pink", label: "Pink", value: "#ec4899" },
+  { id: "orange", label: "Orange", value: "#f97316" },
+  { id: "gray", label: "Gray", value: "#64748b" }
+];
+const noteFontOptions = [
+  { id: "sans", label: "Sans", value: "var(--sans)" },
+  { id: "serif", label: "Serif", value: "Georgia, serif" },
+  { id: "mono", label: "Mono", value: "var(--mono)" }
+];
+const noteSizeOptions = [
+  { id: "small", label: "Small", value: "13px" },
+  { id: "normal", label: "Normal", value: "15px" },
+  { id: "large", label: "Large", value: "19px" },
+  { id: "huge", label: "Huge", value: "26px" }
+];
+const noteSanitizeSchema = {
+  ...defaultSchema,
+  attributes: {
+    ...defaultSchema.attributes,
+    span: [
+      ...(defaultSchema.attributes?.span ?? []),
+      ["dataNoteColor", ...noteColorOptions.map((option) => option.id)],
+      ["dataNoteFont", ...noteFontOptions.map((option) => option.id)],
+      ["dataNoteSize", ...noteSizeOptions.map((option) => option.id)],
+      ["data-note-color", ...noteColorOptions.map((option) => option.id)],
+      ["data-note-font", ...noteFontOptions.map((option) => option.id)],
+      ["data-note-size", ...noteSizeOptions.map((option) => option.id)]
+    ]
+  }
+};
 
-export function CollaborativeNote({ documentId, initialValue, onContentChange, onPresenceChange, onRealtimeStatusChange, readOnly, roomName, title, user }: CollaborativeNoteProps) {
+export function CollaborativeNote({ documentId, initialValue, onContentChange, onPresenceChange, onRealtimeStatusChange, readOnly, registerDocumentFlush, roomName, title, user }: CollaborativeNoteProps) {
   const roomKey = useMemo(() => `slate:room:${roomName}:note:${documentId}`, [documentId, roomName]);
   const [cursors, setCursors] = useState<LiveCursor[]>([]);
   const [remoteCarets, setRemoteCarets] = useState<RemoteTextCaret[]>([]);
   const [value, setValue] = useState(initialValue);
   const [mode, setMode] = useState<NoteMode>("edit");
+  const [formatMenuOpen, setFormatMenuOpen] = useState(false);
   const contentChangeRef = useRef(onContentChange);
   const latestValueRef = useRef(initialValue);
   const pendingSaveRef = useRef(false);
+  const presenceChangeRef = useRef(onPresenceChange);
   const providerRef = useRef<WebsocketProvider | null>(null);
   const realtimeStatusChangeRef = useRef(onRealtimeStatusChange);
   const saveTimerRef = useRef<number | null>(null);
@@ -70,22 +109,31 @@ export function CollaborativeNote({ documentId, initialValue, onContentChange, o
   }, [onRealtimeStatusChange]);
 
   useEffect(() => {
+    presenceChangeRef.current = onPresenceChange;
+  }, [onPresenceChange]);
+
+  const flushContentSave = useCallback(() => {
+    if (!pendingSaveRef.current) return;
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    pendingSaveRef.current = false;
+    contentChangeRef.current(latestValueRef.current);
+  }, []);
+
+  useEffect(() => registerDocumentFlush(documentId, flushContentSave), [documentId, flushContentSave, registerDocumentFlush]);
+
+  useEffect(() => {
     const doc = new Y.Doc();
     const text = doc.getText("note");
-    const provider = new WebsocketProvider(syncUrl, roomKey, doc, { maxBackoffTime: 2500, resyncInterval: 5000 });
-    const unwatchRealtimeConnection = watchRealtimeConnection(provider, (status) => realtimeStatusChangeRef.current(status));
-
-    providerRef.current = provider;
+    let disposed = false;
+    let provider: WebsocketProvider | null = null;
+    let unwatchRealtimeConnection: (() => void) | null = null;
     textRef.current = text;
-    provider.awareness.setLocalStateField("user", {
-      color: user.color,
-      id: user.id,
-      initials: user.initials,
-      name: user.name,
-      role: user.role
-    });
 
     const updatePresence = () => {
+      if (!provider) return;
       const states = Array.from(provider.awareness.getStates().values());
       const users = states
         .map((state) => state.user)
@@ -93,7 +141,7 @@ export function CollaborativeNote({ documentId, initialValue, onContentChange, o
           return Boolean(presenceUser?.id && presenceUser?.name && presenceUser?.initials && presenceUser?.color && presenceUser?.role);
         });
 
-      onPresenceChange(Array.from(new Map(users.map((presenceUser) => [presenceUser.id, presenceUser])).values()));
+      presenceChangeRef.current(Array.from(new Map(users.map((presenceUser) => [presenceUser.id, presenceUser])).values()));
       setRemoteCarets(states.flatMap((state) => {
         if (!state.user?.id || state.user.id === user.id || !state.selection?.head) return [];
         const position = Y.createAbsolutePositionFromRelativePosition(state.selection.head, doc);
@@ -107,12 +155,6 @@ export function CollaborativeNote({ documentId, initialValue, onContentChange, o
         if (!state.user?.id || !state.pointer) return [];
         return [{ x: state.pointer.x, y: state.pointer.y, user: state.user }];
       }));
-    };
-
-    const flushContentSave = () => {
-      if (!pendingSaveRef.current) return;
-      pendingSaveRef.current = false;
-      contentChangeRef.current(latestValueRef.current);
     };
 
     const updateValue = () => {
@@ -131,37 +173,44 @@ export function CollaborativeNote({ documentId, initialValue, onContentChange, o
     };
 
     const handlePageHide = () => {
-      if (saveTimerRef.current) {
-        window.clearTimeout(saveTimerRef.current);
-        saveTimerRef.current = null;
-      }
       flushContentSave();
     };
 
     text.observe(updateValue);
-    provider.awareness.on("change", updatePresence);
     window.addEventListener("pagehide", handlePageHide);
-    window.setTimeout(updatePresence, 0);
+
+    void fetchRealtimeGrant(roomKey).then((grant) => {
+      if (disposed) return;
+      provider = new WebsocketProvider(syncUrl, roomKey, doc, { maxBackoffTime: 2500, params: { grant }, resyncInterval: 5000 });
+      providerRef.current = provider;
+      unwatchRealtimeConnection = watchRealtimeConnection(provider, (status) => realtimeStatusChangeRef.current(status));
+      provider.awareness.setLocalStateField("user", {
+        color: user.color,
+        id: user.id,
+        initials: user.initials,
+        name: user.name,
+        role: user.role
+      });
+      provider.awareness.on("change", updatePresence);
+      window.setTimeout(updatePresence, 0);
+    }).catch(() => realtimeStatusChangeRef.current("offline"));
 
     return () => {
-      if (saveTimerRef.current) {
-        window.clearTimeout(saveTimerRef.current);
-        saveTimerRef.current = null;
-      }
+      disposed = true;
       flushContentSave();
       window.removeEventListener("pagehide", handlePageHide);
       text.unobserve(updateValue);
-      provider.awareness.off("change", updatePresence);
-      unwatchRealtimeConnection();
-      onPresenceChange([]);
+      provider?.awareness.off("change", updatePresence);
+      unwatchRealtimeConnection?.();
+      presenceChangeRef.current([]);
       setCursors([]);
       setRemoteCarets([]);
-      provider.destroy();
+      provider?.destroy();
       doc.destroy();
       providerRef.current = null;
       textRef.current = null;
     };
-  }, [initialValue, onPresenceChange, onRealtimeStatusChange, readOnly, roomKey, user.color, user.id, user.initials, user.name, user.role]);
+  }, [flushContentSave, readOnly, roomKey, user.color, user.id, user.initials, user.name, user.role]);
 
   function updatePointer(event: MouseEvent<HTMLElement>) {
     const provider = providerRef.current;
@@ -200,12 +249,157 @@ export function CollaborativeNote({ documentId, initialValue, onContentChange, o
     applyTextDiff(text, nextValue);
   }
 
+  function commitFormattedValue(nextValue: string, selectionStart: number, selectionEnd: number) {
+    const text = textRef.current;
+
+    setValue(nextValue);
+    latestValueRef.current = nextValue;
+    pendingSaveRef.current = true;
+
+    if (text) {
+      applyTextDiff(text, nextValue);
+    } else {
+      pendingSaveRef.current = false;
+      contentChangeRef.current(nextValue);
+    }
+
+    window.setTimeout(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(selectionStart, selectionEnd);
+      const provider = providerRef.current;
+      const yText = textRef.current;
+      if (!provider || !yText) return;
+      provider.awareness.setLocalStateField("selection", {
+        anchor: Y.createRelativePositionFromTypeIndex(yText, selectionStart),
+        head: Y.createRelativePositionFromTypeIndex(yText, selectionEnd)
+      });
+    }, 0);
+  }
+
+  function replaceSelection(replacement: string, selectionOffset = 0, selectionLength = replacement.length) {
+    const textarea = textareaRef.current;
+    if (!textarea || readOnly) return;
+
+    const selectionStart = textarea.selectionStart;
+    const selectionEnd = textarea.selectionEnd;
+    const nextValue = `${value.slice(0, selectionStart)}${replacement}${value.slice(selectionEnd)}`;
+    const nextSelectionStart = selectionStart + selectionOffset;
+    commitFormattedValue(nextValue, nextSelectionStart, nextSelectionStart + selectionLength);
+  }
+
+  function wrapSelection(prefix: string, suffix: string, placeholder: string) {
+    const textarea = textareaRef.current;
+    if (!textarea || readOnly) return;
+
+    const selectionStart = textarea.selectionStart;
+    const selectionEnd = textarea.selectionEnd;
+    const selectedText = value.slice(selectionStart, selectionEnd) || placeholder;
+    const replacement = `${prefix}${selectedText}${suffix}`;
+    replaceSelection(replacement, prefix.length, selectedText.length);
+  }
+
+  function transformSelectedLines(transformLine: (line: string, index: number) => string) {
+    const textarea = textareaRef.current;
+    if (!textarea || readOnly) return;
+
+    const selectionStart = textarea.selectionStart;
+    const selectionEnd = textarea.selectionEnd;
+    const lineStart = value.lastIndexOf("\n", Math.max(0, selectionStart - 1)) + 1;
+    const nextLineBreak = value.indexOf("\n", selectionEnd);
+    const lineEnd = nextLineBreak === -1 ? value.length : nextLineBreak;
+    const originalBlock = value.slice(lineStart, lineEnd) || "";
+    const replacement = originalBlock.split("\n").map(transformLine).join("\n");
+    const nextValue = `${value.slice(0, lineStart)}${replacement}${value.slice(lineEnd)}`;
+    commitFormattedValue(nextValue, lineStart, lineStart + replacement.length);
+  }
+
+  function formatHeading(level: number) {
+    transformSelectedLines((line) => `${"#".repeat(level)} ${line.replace(/^#{1,6}\s+/, "") || "Heading"}`);
+  }
+
+  function applyInlineStyle(kind: "color" | "font" | "size", id: string) {
+    wrapSelection(`<span data-note-${kind}="${id}">`, "</span>", "styled text");
+  }
+
+  function runFormatCommand(command: string) {
+    if (command === "h1") formatHeading(1);
+    if (command === "h2") formatHeading(2);
+    if (command === "h3") formatHeading(3);
+    if (command === "bold") wrapSelection("**", "**", "bold text");
+    if (command === "italic") wrapSelection("_", "_", "italic text");
+    if (command === "code") wrapSelection("`", "`", "code");
+    if (command === "quote") transformSelectedLines((line) => `> ${line.replace(/^>\s?/, "") || "Quote"}`);
+    if (command === "bullets") transformSelectedLines((line) => `- ${line.replace(/^[-*]\s+/, "") || "List item"}`);
+    if (command === "numbers") transformSelectedLines((line, index) => `${index + 1}. ${line.replace(/^\d+\.\s+/, "") || "List item"}`);
+    if (command === "tasks") transformSelectedLines((line) => `- [ ] ${line.replace(/^- \[[ xX]\]\s+/, "") || "Task"}`);
+    if (command === "table") replaceSelection("| Column | Column |\n| --- | --- |\n| Value | Value |", 2, 6);
+    if (command === "divider") replaceSelection("\n---\n", 5, 0);
+    if (command === "link") wrapSelection("[", "](https://example.com)", "link");
+  }
+
   return (
     <section className="note-document realtime-document-host" onMouseMove={updatePointer}>
       <div className="note-editor-frame">
-        <div className="note-mode-switch" aria-label="Note mode">
-          <button className={mode === "edit" ? "active" : ""} onClick={() => setMode("edit")} type="button">Edit</button>
-          <button className={mode === "preview" ? "active" : ""} onClick={() => setMode("preview")} type="button">Preview</button>
+        <div className="note-toolbar">
+          <div className="note-mode-switch" aria-label="Note mode">
+            <button className={mode === "edit" ? "active" : ""} onClick={() => setMode("edit")} type="button">Edit</button>
+            <button className={mode === "preview" ? "active" : ""} onClick={() => setMode("preview")} type="button">Preview</button>
+          </div>
+          <div className="note-format-menu" data-open={formatMenuOpen ? "true" : "false"}>
+            <button disabled={readOnly || mode !== "edit"} onClick={() => setFormatMenuOpen((open) => !open)} type="button">Format</button>
+            {formatMenuOpen && mode === "edit" && (
+              <div className="note-format-panel">
+                <section>
+                  <span>Markdown</span>
+                  <div className="note-format-grid">
+                    {[
+                      ["h1", "H1"],
+                      ["h2", "H2"],
+                      ["h3", "H3"],
+                      ["bold", "Bold"],
+                      ["italic", "Italic"],
+                      ["code", "Code"],
+                      ["quote", "Quote"],
+                      ["bullets", "Bullets"],
+                      ["numbers", "Numbers"],
+                      ["tasks", "Tasks"],
+                      ["table", "Table"],
+                      ["divider", "Divider"],
+                      ["link", "Link"]
+                    ].map(([command, label]) => (
+                      <button key={command} onMouseDown={(event) => { event.preventDefault(); runFormatCommand(command); }} type="button">{label}</button>
+                    ))}
+                  </div>
+                </section>
+                <section>
+                  <span>Text color</span>
+                  <div className="note-style-row">
+                    {noteColorOptions.map((option) => (
+                      <button aria-label={option.label} className="note-color-swatch" key={option.id} onMouseDown={(event) => { event.preventDefault(); applyInlineStyle("color", option.id); }} style={{ background: option.value || "var(--workspace-panel)" }} type="button" />
+                    ))}
+                  </div>
+                </section>
+                <section>
+                  <span>Font</span>
+                  <div className="note-style-row">
+                    {noteFontOptions.map((option) => (
+                      <button key={option.id} onMouseDown={(event) => { event.preventDefault(); applyInlineStyle("font", option.id); }} type="button">{option.label}</button>
+                    ))}
+                  </div>
+                </section>
+                <section>
+                  <span>Size</span>
+                  <div className="note-style-row">
+                    {noteSizeOptions.map((option) => (
+                      <button key={option.id} onMouseDown={(event) => { event.preventDefault(); applyInlineStyle("size", option.id); }} type="button">{option.label}</button>
+                    ))}
+                  </div>
+                </section>
+              </div>
+            )}
+          </div>
         </div>
         {mode === "edit" ? (
           <>
@@ -231,7 +425,7 @@ export function CollaborativeNote({ documentId, initialValue, onContentChange, o
           </>
         ) : (
           <div className="note-markdown-preview">
-            <ReactMarkdown rehypePlugins={[rehypeSanitize]} remarkPlugins={[remarkGfm]}>
+            <ReactMarkdown components={{ span: NotePreviewSpan }} rehypePlugins={[rehypeRaw, [rehypeSanitize, noteSanitizeSchema]]} remarkPlugins={[remarkGfm]}>
               {value || "_Nothing here yet._"}
             </ReactMarkdown>
           </div>
@@ -240,6 +434,24 @@ export function CollaborativeNote({ documentId, initialValue, onContentChange, o
       <LiveCursors cursors={cursors} localUserId={user.id} />
     </section>
   );
+}
+
+function NotePreviewSpan(props: HTMLAttributes<HTMLSpanElement> & { node?: unknown }) {
+  const noteProps = props as HTMLAttributes<HTMLSpanElement> & { "data-note-color"?: string; "data-note-font"?: string; "data-note-size"?: string; dataNoteColor?: string; dataNoteFont?: string; dataNoteSize?: string };
+  const colorId = noteProps["data-note-color"] ?? noteProps.dataNoteColor ?? "";
+  const fontId = noteProps["data-note-font"] ?? noteProps.dataNoteFont ?? "";
+  const sizeId = noteProps["data-note-size"] ?? noteProps.dataNoteSize ?? "";
+  const color = noteColorOptions.find((option) => option.id === colorId)?.value;
+  const fontFamily = noteFontOptions.find((option) => option.id === fontId)?.value;
+  const fontSize = noteSizeOptions.find((option) => option.id === sizeId)?.value;
+  const style: CSSProperties = {};
+  const { children } = props;
+
+  if (color) style.color = color;
+  if (fontFamily) style.fontFamily = fontFamily;
+  if (fontSize) style.fontSize = fontSize;
+
+  return <span style={style}>{children as ReactNode}</span>;
 }
 
 function applyTextDiff(text: Y.Text, nextValue: string) {

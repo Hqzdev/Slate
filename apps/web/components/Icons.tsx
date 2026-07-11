@@ -46,6 +46,23 @@ export function CommandIcon({ className }: IconProps) {
   );
 }
 
+export function AiIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M12 3.2c.55 3.2 2.35 5 5.55 5.55C14.35 9.3 12.55 11.1 12 14.3c-.55-3.2-2.35-5-5.55-5.55C9.65 8.2 11.45 6.4 12 3.2zM18.3 14.4c.25 1.55 1.15 2.45 2.7 2.7-1.55.25-2.45 1.15-2.7 2.7-.25-1.55-1.15-2.45-2.7-2.7 1.55-.25 2.45-1.15 2.7-2.7zM5.5 14.5c.2 1.15.85 1.8 2 2-1.15.2-1.8.85-2 2-.2-1.15-.85-1.8-2-2 1.15-.2 1.8-.85 2-2z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </StrokeIcon>
+  );
+}
+
+export function CommentIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M5.7 4.2h12.6c1.1 0 2 .9 2 2v8.2c0 1.1-.9 2-2 2H10l-4.7 3.2v-3.2c-.9-.2-1.6-1-1.6-2V6.2c0-1.1.9-2 2-2z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M8 8.5h8M8 12.2h5.2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </StrokeIcon>
+  );
+}
+
 export function FileIcon({ className }: IconProps) {
   return (
     <StrokeIcon className={className}>
@@ -90,6 +107,16 @@ export function UsersIcon({ className }: IconProps) {
   );
 }
 
+export function SupportIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M4.8 12.8v-1.4a7.2 7.2 0 0 1 14.4 0v1.4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M6.2 11.6h1.5c.7 0 1.2.5 1.2 1.2v3.1c0 .7-.5 1.2-1.2 1.2H6.2c-.8 0-1.4-.6-1.4-1.4V13c0-.8.6-1.4 1.4-1.4zM16.3 11.6h1.5c.8 0 1.4.6 1.4 1.4v2.7c0 .8-.6 1.4-1.4 1.4h-1.5c-.7 0-1.2-.5-1.2-1.2v-3.1c0-.7.5-1.2 1.2-1.2z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M15.2 18.4h-2.1c-.75 0-1.35-.6-1.35-1.35v-.2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </StrokeIcon>
+  );
+}
+
 export function RenameIcon({ className }: IconProps) {
   return (
     <StrokeIcon className={className}>
@@ -125,6 +152,14 @@ export function FilePlusIcon({ className }: IconProps) {
   );
 }
 
+export function PlusIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </StrokeIcon>
+  );
+}
+
 export function FolderPlusIcon({ className }: IconProps) {
   return (
     <StrokeIcon className={className}>
@@ -154,6 +189,31 @@ export function CollapseIcon({ className }: IconProps) {
   return (
     <StrokeIcon className={className}>
       <path d="M5 7h14M8 12h8M10.5 17h3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </StrokeIcon>
+  );
+}
+
+export function SortIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M7 5h10M7 12h7M7 19h4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </StrokeIcon>
+  );
+}
+
+export function SortNameIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M5.5 18.5 9 5.5l3.5 13M6.4 15h5.2M15.2 7h3.3l-3.6 5h3.8M15 17h4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </StrokeIcon>
+  );
+}
+
+export function SortChangesIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M12 5v7l4 2.4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M19.2 7.2A8.4 8.4 0 1 0 20 12M19.2 7.2V3.8M19.2 7.2h-3.4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
     </StrokeIcon>
   );
 }
@@ -229,6 +289,22 @@ export function UsageIcon({ className }: IconProps) {
     <StrokeIcon className={className}>
       <path d="M5.5 19V12M10 19V8M14.5 19V5M19 19v-9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
       <path d="M4 20.5h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </StrokeIcon>
+  );
+}
+
+export function DashboardIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M4.4 5.2h6.1v6.1H4.4zM13.5 5.2h6.1v3.9h-6.1zM4.4 14.1h6.1v4.7H4.4zM13.5 11.9h6.1v6.9h-6.1z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </StrokeIcon>
+  );
+}
+
+export function ActivityIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M4.2 12h3.2l2.2-6.2 4.2 12.4 2.3-6.2h3.7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
     </StrokeIcon>
   );
 }

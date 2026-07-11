@@ -1,39 +1,11 @@
 "use client";
 
-import { type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type ReactNode, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import type { CanvasColor, CanvasDash, CanvasFill, CanvasFont, CanvasShape, CanvasShapeType, CanvasTextAlign, CanvasViewport } from "@/lib/canvas/canvasTypes";
 
-export type CanvasShapeType = "arrow" | "ellipse" | "line" | "note" | "rectangle" | "text";
-export type CanvasToolId = "arrow" | "ellipse" | "hand" | "line" | "note" | "rectangle" | "select" | "text";
-export type CanvasToolIconName = "arrow" | "backward" | "check" | "chevron" | "download" | "ellipse" | "eye" | "eyeOff" | "fit" | "forward" | "frame" | "hand" | "image" | "line" | "lock" | "minus" | "note" | "plus" | "pointer" | "rectangle" | "redo" | "text" | "undo" | "unlock";
-export type CanvasColor = "black" | "blue" | "green" | "grey" | "light-blue" | "light-green" | "light-red" | "light-violet" | "orange" | "red" | "violet" | "white" | "yellow";
-export type CanvasFill = "none" | "semi" | "solid";
-export type CanvasDash = "dash-dot" | "dashed" | "dotted" | "long-dashed" | "solid";
-export type CanvasSize = number;
-export type CanvasFont = "mono" | "sans" | "serif";
-export type CanvasTextAlign = "center" | "left" | "right";
-
-export type CanvasShape = {
-  clientId: string;
-  color: CanvasColor;
-  dash: CanvasDash;
-  fill: CanvasFill;
-  font: CanvasFont;
-  h: number;
-  id: string;
-  isHidden: boolean;
-  isLocked: boolean;
-  name: string;
-  opacity: number;
-  revision: number;
-  size: CanvasSize;
-  text: string;
-  textAlign: CanvasTextAlign;
-  type: CanvasShapeType;
-  updatedAt: number;
-  w: number;
-  x: number;
-  y: number;
-};
+export type { CanvasColor, CanvasDash, CanvasFill, CanvasFont, CanvasShape, CanvasShapeType, CanvasSize, CanvasTextAlign, CanvasViewport } from "@/lib/canvas/canvasTypes";
+export type CanvasToolId = "arrow" | "diamond" | "ellipse" | "hand" | "line" | "note" | "parallelogram" | "rectangle" | "select" | "text" | "trapezoid";
+export type CanvasToolIconName = "arrow" | "backward" | "check" | "chevron" | "diamond" | "download" | "ellipse" | "eye" | "eyeOff" | "fit" | "forward" | "frame" | "hand" | "image" | "line" | "lock" | "minus" | "note" | "parallelogram" | "plus" | "pointer" | "rectangle" | "redo" | "text" | "trapezoid" | "undo" | "unlock";
 
 export type CanvasStats = {
   activeToolId: CanvasToolId;
@@ -56,11 +28,12 @@ export type CanvasTool = {
   icon: CanvasToolIconName;
   id: CanvasToolId;
   label: string;
+  shortcut?: string;
 };
 
 export type CanvasEditorAction = "exportPng" | "exportSvg" | "fit" | "redo" | "undo" | "zoomIn" | "zoomOut" | "zoomReset";
-export type CanvasContextAction = "addRectangle" | "addText" | "bringForward" | "delete" | "duplicate" | "resetZoom" | "selectAll" | "sendBackward";
-export type CanvasInspectorAction = "bringForward" | "delete" | "duplicate" | "lock" | "resetStyle" | "sendBackward" | "unlock";
+export type CanvasContextAction = "addNote" | "addRectangle" | "addText" | "bringForward" | "delete" | "duplicate" | "resetZoom" | "selectAll" | "sendBackward";
+export type CanvasInspectorAction = "alignCenter" | "alignLeft" | "alignRight" | "bringForward" | "delete" | "distributeHorizontal" | "distributeVertical" | "duplicate" | "lock" | "resetStyle" | "sendBackward" | "unlock";
 export type CanvasLayerAction = "bringForward" | "hide" | "lock" | "sendBackward" | "show" | "unlock";
 export type CanvasNumberKey = "h" | "length" | "w" | "x" | "y";
 type CanvasBoundsNumberKey = Exclude<CanvasNumberKey, "length">;
@@ -84,6 +57,7 @@ type CanvasEditorShellProps = {
   viewport: CanvasViewport;
   onContextAction: (action: CanvasContextAction, point: CanvasPoint | null) => void;
   onEditorAction: (action: CanvasEditorAction) => void;
+  onInspectorAction: (action: CanvasInspectorAction) => void;
   onLayerAction: (shapeId: string, action: CanvasLayerAction) => void;
   onLayerRename: (shapeId: string, name: string) => void;
   onNumberChange: (shapeId: string, key: CanvasNumberKey, value: number) => void;
@@ -93,27 +67,30 @@ type CanvasEditorShellProps = {
   onStyleChange: (key: CanvasStyleKey, value: string) => void;
 };
 
-export type CanvasViewport = {
-  panX: number;
-  panY: number;
-  zoom: number;
-};
-
 type CanvasSelectOption = {
   label: string;
   value: string;
 };
 
 const canvasTools: CanvasTool[] = [
-  { icon: "pointer", id: "select", label: "Select" },
-  { icon: "hand", id: "hand", label: "Hand" },
-  { disabledInReadOnly: true, icon: "text", id: "text", label: "Text" },
-  { disabledInReadOnly: true, icon: "rectangle", id: "rectangle", label: "Rectangle" },
-  { disabledInReadOnly: true, icon: "ellipse", id: "ellipse", label: "Ellipse" },
-  { disabledInReadOnly: true, icon: "line", id: "line", label: "Line" },
-  { disabledInReadOnly: true, icon: "arrow", id: "arrow", label: "Arrow" },
-  { disabledInReadOnly: true, icon: "note", id: "note", label: "Note" }
+  { icon: "pointer", id: "select", label: "Select", shortcut: "V" },
+  { icon: "hand", id: "hand", label: "Hand", shortcut: "H" },
+  { disabledInReadOnly: true, icon: "text", id: "text", label: "Text", shortcut: "T" },
+  { disabledInReadOnly: true, icon: "rectangle", id: "rectangle", label: "Rectangle", shortcut: "R" },
+  { disabledInReadOnly: true, icon: "diamond", id: "diamond", label: "Polygon", shortcut: "D" },
+  { disabledInReadOnly: true, icon: "trapezoid", id: "trapezoid", label: "Trapezoid" },
+  { disabledInReadOnly: true, icon: "parallelogram", id: "parallelogram", label: "Parallelogram" },
+  { disabledInReadOnly: true, icon: "ellipse", id: "ellipse", label: "Ellipse", shortcut: "O" },
+  { disabledInReadOnly: true, icon: "line", id: "line", label: "Line", shortcut: "L" },
+  { disabledInReadOnly: true, icon: "arrow", id: "arrow", label: "Arrow", shortcut: "A" },
+  { disabledInReadOnly: true, icon: "note", id: "note", label: "Note", shortcut: "N" }
 ];
+
+const navigationTools = canvasTools.slice(0, 2);
+const insertTools = canvasTools.filter((tool) => ["text", "rectangle", "ellipse", "diamond", "arrow"].includes(tool.id));
+const additionalInsertTools = canvasTools.filter((tool) => ["line", "note", "trapezoid", "parallelogram"].includes(tool.id));
+const canvasInspectorStorageKey = "slate-canvas-inspector-collapsed";
+const canvasInspectorStorageEvent = "slate:canvas-inspector-change";
 
 const colorOptions: CanvasColor[] = ["black", "grey", "blue", "light-blue", "violet", "light-violet", "green", "light-green", "yellow", "orange", "red", "light-red", "white"];
 const fillOptions: CanvasFill[] = ["none", "semi", "solid"];
@@ -167,6 +144,9 @@ function CanvasToolIcon({ name }: { name: CanvasToolIconName }) {
       {name === "frame" && <><path d="M5 5h14v14H5V5Z" /><path d="M8.5 8.5h7v7h-7v-7Z" /></>}
       {name === "text" && <><path d="M6 6h12" /><path d="M12 6v12" /><path d="M9 18h6" /></>}
       {name === "rectangle" && <path d="M5 7h14v10H5V7Z" />}
+      {name === "diamond" && <path d="M12 4.8 19.2 12 12 19.2 4.8 12 12 4.8Z" />}
+      {name === "trapezoid" && <path d="M8 7h8l4 10H4L8 7Z" />}
+      {name === "parallelogram" && <path d="M8 7h12l-4 10H4L8 7Z" />}
       {name === "ellipse" && <path d="M4.8 12c0-3 3.2-5.4 7.2-5.4s7.2 2.4 7.2 5.4-3.2 5.4-7.2 5.4S4.8 15 4.8 12Z" />}
       {name === "line" && <path d="m6 17 12-10" />}
       {name === "arrow" && <><path d="M5 17 17 5" /><path d="M10 5h7v7" /></>}
@@ -187,6 +167,42 @@ function CanvasToolIcon({ name }: { name: CanvasToolIconName }) {
       {name === "forward" && <><path d="M12 5v14" /><path d="m7 10 5-5 5 5" /></>}
       {name === "backward" && <><path d="M12 19V5" /><path d="m7 14 5 5 5-5" /></>}
     </svg>
+  );
+}
+
+function subscribeCanvasInspector(callback: () => void) {
+  window.addEventListener("storage", callback);
+  window.addEventListener(canvasInspectorStorageEvent, callback);
+  return () => {
+    window.removeEventListener("storage", callback);
+    window.removeEventListener(canvasInspectorStorageEvent, callback);
+  };
+}
+
+function getCanvasInspectorSnapshot() {
+  return window.localStorage.getItem(canvasInspectorStorageKey) === "true";
+}
+
+function getServerCanvasInspectorSnapshot() {
+  return false;
+}
+
+function setCanvasInspectorSnapshot(collapsed: boolean) {
+  window.localStorage.setItem(canvasInspectorStorageKey, collapsed ? "true" : "false");
+  window.dispatchEvent(new Event(canvasInspectorStorageEvent));
+}
+
+function getShapeIconName(type: CanvasShapeType): CanvasToolIconName {
+  return type;
+}
+
+function CanvasToolbarButton({ active = false, disabled = false, icon, label, onClick, shortcut }: { active?: boolean; disabled?: boolean; icon: CanvasToolIconName; label: string; onClick: () => void; shortcut?: string }) {
+  const title = shortcut ? `${label} (${shortcut})` : label;
+  return (
+    <button aria-label={title} className={active ? "active" : ""} disabled={disabled} onClick={onClick} title={title} type="button">
+      <CanvasToolIcon name={icon} />
+      <span className="canvas-tool-tooltip">{label}{shortcut && <kbd>{shortcut}</kbd>}</span>
+    </button>
   );
 }
 
@@ -263,9 +279,12 @@ function CanvasSelectControl({ disabled, label, onChange, options, value }: { di
   );
 }
 
-export function CanvasEditorShell({ activeToolId, children, onContextAction, onEditorAction, onLayerAction, onLayerRename, onNumberChange, onSelectShape, onSelectTool, onSnapToggle, onStyleChange, readOnly, selectedShape, selectedShapes, shapes, stats, viewport }: CanvasEditorShellProps) {
+export function CanvasEditorShell({ activeToolId, children, onContextAction, onEditorAction, onInspectorAction, onLayerAction, onLayerRename, onNumberChange, onSelectShape, onSelectTool, onSnapToggle, onStyleChange, readOnly, selectedShape, selectedShapes, shapes, stats, viewport }: CanvasEditorShellProps) {
   const [contextMenu, setContextMenu] = useState<CanvasContextMenu | null>(null);
   const [layerNameDrafts, setLayerNameDrafts] = useState<Record<string, string>>({});
+  const [overflowMenuOpen, setOverflowMenuOpen] = useState(false);
+  const inspectorCollapsed = useSyncExternalStore(subscribeCanvasInspector, getCanvasInspectorSnapshot, getServerCanvasInspectorSnapshot);
+  const overflowMenuRef = useRef<HTMLDivElement | null>(null);
   const hasSelection = selectedShapes.length > 0;
   const selectedLineShape = selectedShape && (selectedShape.type === "line" || selectedShape.type === "arrow") ? selectedShape : null;
   const lineOnlySelection = selectedShapes.length > 0 && selectedShapes.every((shape) => shape.type === "line" || shape.type === "arrow");
@@ -277,6 +296,8 @@ export function CanvasEditorShell({ activeToolId, children, onContextAction, onE
   const fontValue = getSharedValue(selectedShapes, "font", "sans");
   const textAlignValue = getSharedValue(selectedShapes, "textAlign", "left");
   const opacityValue = getSharedValue(selectedShapes, "opacity", 1);
+  const activeTool = canvasTools.find((tool) => tool.id === activeToolId) ?? canvasTools[0];
+  const selectedShapesLocked = selectedShapes.length > 0 && selectedShapes.every((shape) => shape.isLocked);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -294,8 +315,29 @@ export function CanvasEditorShell({ activeToolId, children, onContextAction, onE
     };
   }, [contextMenu]);
 
+  useEffect(() => {
+    if (!overflowMenuOpen) return;
+
+    function closeOverflowMenu(event: PointerEvent) {
+      if (overflowMenuRef.current?.contains(event.target as Node)) return;
+      setOverflowMenuOpen(false);
+    }
+
+    function closeOverflowMenuWithKeyboard(event: KeyboardEvent) {
+      if (event.key === "Escape") setOverflowMenuOpen(false);
+    }
+
+    window.addEventListener("pointerdown", closeOverflowMenu);
+    window.addEventListener("keydown", closeOverflowMenuWithKeyboard);
+    return () => {
+      window.removeEventListener("pointerdown", closeOverflowMenu);
+      window.removeEventListener("keydown", closeOverflowMenuWithKeyboard);
+    };
+  }, [overflowMenuOpen]);
+
   function getPagePoint(event: MouseEvent<HTMLDivElement>) {
-    const rect = event.currentTarget.getBoundingClientRect();
+    const canvasFrame = event.currentTarget.querySelector<HTMLElement>(".canvas-engine-frame");
+    const rect = canvasFrame?.getBoundingClientRect() ?? event.currentTarget.getBoundingClientRect();
     return {
       x: (event.clientX - rect.left - viewport.panX) / viewport.zoom,
       y: (event.clientY - rect.top - viewport.panY) / viewport.zoom
@@ -347,30 +389,74 @@ export function CanvasEditorShell({ activeToolId, children, onContextAction, onE
   }
 
   return (
-    <section className="canvas-editor-shell">
+    <section className={inspectorCollapsed ? "canvas-editor-shell inspector-collapsed" : "canvas-editor-shell"} data-grid-density={stats.zoomPercent < 75 ? "low" : hasSelection ? "selection" : "normal"}>
       <div className="canvas-editor-workspace" onContextMenu={handleContextMenu}>
+        <div className="canvas-toolbar" aria-label="Canvas tools" onPointerDown={(event) => event.stopPropagation()}>
+          <div className="canvas-toolbar-group" aria-label="Navigation tools">
+            {navigationTools.map((tool) => (
+              <CanvasToolbarButton active={activeToolId === tool.id} disabled={readOnly && tool.disabledInReadOnly} icon={tool.icon} key={tool.id} label={tool.label} onClick={() => onSelectTool(tool.id)} shortcut={tool.shortcut} />
+            ))}
+          </div>
+          <i />
+          <div className="canvas-toolbar-group canvas-toolbar-insert" aria-label="Insert tools">
+            {insertTools.map((tool) => (
+              <CanvasToolbarButton active={activeToolId === tool.id} disabled={readOnly && tool.disabledInReadOnly} icon={tool.icon} key={tool.id} label={tool.label} onClick={() => onSelectTool(tool.id)} shortcut={tool.shortcut} />
+            ))}
+          </div>
+          <i />
+          <div className="canvas-toolbar-group" aria-label="History tools">
+            <CanvasToolbarButton disabled={readOnly} icon="undo" label="Undo" onClick={() => onEditorAction("undo")} shortcut="⌘Z" />
+            <CanvasToolbarButton disabled={readOnly} icon="redo" label="Redo" onClick={() => onEditorAction("redo")} shortcut="⇧⌘Z" />
+          </div>
+          <span className="canvas-toolbar-spacer" />
+          <CanvasToolbarButton icon="fit" label="Fit to content" onClick={() => onEditorAction("fit")} />
+          <div className="canvas-toolbar-overflow" data-open={overflowMenuOpen ? "true" : "false"} ref={overflowMenuRef}>
+            <button aria-expanded={overflowMenuOpen} aria-haspopup="menu" aria-label="More canvas actions" onClick={() => setOverflowMenuOpen((open) => !open)} title="More canvas actions" type="button">
+              <span aria-hidden="true">···</span>
+            </button>
+            {overflowMenuOpen && (
+              <div className="canvas-toolbar-menu" role="menu">
+                {additionalInsertTools.map((tool) => (
+                  <button disabled={readOnly && tool.disabledInReadOnly} key={tool.id} onClick={() => { onSelectTool(tool.id); setOverflowMenuOpen(false); }} role="menuitem" type="button"><CanvasToolIcon name={tool.icon} /><span>{tool.label}</span>{tool.shortcut && <kbd>{tool.shortcut}</kbd>}</button>
+                ))}
+                <i />
+                <button onClick={() => { onEditorAction("exportSvg"); setOverflowMenuOpen(false); }} role="menuitem" type="button"><CanvasToolIcon name="download" /><span>Export SVG</span></button>
+                <button onClick={() => { onEditorAction("exportPng"); setOverflowMenuOpen(false); }} role="menuitem" type="button"><CanvasToolIcon name="image" /><span>Export PNG</span></button>
+              </div>
+            )}
+          </div>
+        </div>
+
         <div className="canvas-engine-frame">
           {children}
         </div>
 
-        <div className="canvas-floating-toolbar" aria-label="Canvas tools" onMouseDown={(event) => event.preventDefault()}>
-          {canvasTools.map((tool) => (
-            <button aria-label={tool.label} className={activeToolId === tool.id ? "active" : ""} disabled={readOnly && tool.disabledInReadOnly} key={tool.id} onClick={() => onSelectTool(tool.id)} title={tool.label} type="button">
-              <CanvasToolIcon name={tool.icon} />
-            </button>
-          ))}
-          <i />
-          <button aria-label="Undo" disabled={readOnly} onClick={() => onEditorAction("undo")} title="Undo" type="button"><CanvasToolIcon name="undo" /></button>
-          <button aria-label="Redo" disabled={readOnly} onClick={() => onEditorAction("redo")} title="Redo" type="button"><CanvasToolIcon name="redo" /></button>
-          <i />
-          <button aria-label="Zoom out" onClick={() => onEditorAction("zoomOut")} title="Zoom out" type="button"><CanvasToolIcon name="minus" /></button>
-          <button aria-label="Reset zoom" onClick={() => onEditorAction("zoomReset")} title="Reset zoom" type="button">{stats.zoomPercent}%</button>
-          <button aria-label="Zoom in" onClick={() => onEditorAction("zoomIn")} title="Zoom in" type="button"><CanvasToolIcon name="plus" /></button>
-          <button aria-label="Fit to content" onClick={() => onEditorAction("fit")} title="Fit to content" type="button"><CanvasToolIcon name="fit" /></button>
-          <i />
-          <button aria-label="Export SVG" onClick={() => onEditorAction("exportSvg")} title="Export SVG" type="button"><CanvasToolIcon name="download" /></button>
-          <button aria-label="Export PNG" onClick={() => onEditorAction("exportPng")} title="Export PNG" type="button"><CanvasToolIcon name="image" /></button>
-        </div>
+        {shapes.length === 0 && (
+          <div className="canvas-empty-state">
+            <span><CanvasToolIcon name="frame" /></span>
+            <strong>Start mapping your workspace</strong>
+            <p>Add a component, note, or connector to begin an engineering diagram.</p>
+            <div>
+              <button disabled={readOnly} onClick={() => onContextAction("addRectangle", null)} type="button"><CanvasToolIcon name="rectangle" />Add shape</button>
+              <button disabled={readOnly} onClick={() => onContextAction("addNote", null)} type="button"><CanvasToolIcon name="note" />Add note</button>
+            </div>
+          </div>
+        )}
+
+        <footer className="canvas-statusbar">
+          <div>
+            <strong>{activeTool.label} tool</strong>
+            <button disabled={readOnly} onClick={onSnapToggle} type="button">Snap {stats.snapToGrid ? "on" : "off"}</button>
+            <span>Grid {stats.gridSize}px</span>
+            {stats.selectedCount > 0 && <span>{stats.selectedCount} selected · {stats.selectedBoundsText}</span>}
+          </div>
+          <div className="canvas-zoom-controls">
+            <button aria-label="Zoom out" onClick={() => onEditorAction("zoomOut")} title="Zoom out" type="button"><CanvasToolIcon name="minus" /></button>
+            <button aria-label="Reset zoom" onClick={() => onEditorAction("zoomReset")} title="Reset zoom" type="button">{stats.zoomPercent}%</button>
+            <button aria-label="Zoom in" onClick={() => onEditorAction("zoomIn")} title="Zoom in" type="button"><CanvasToolIcon name="plus" /></button>
+            <button aria-label="Fit to content" onClick={() => onEditorAction("fit")} title="Fit to content" type="button">Fit</button>
+          </div>
+        </footer>
 
         {contextMenu && (
           <div className="canvas-context-menu" onPointerDown={(event) => event.stopPropagation()} style={{ left: contextMenu.x, top: contextMenu.y }}>
@@ -381,6 +467,7 @@ export function CanvasEditorShell({ activeToolId, children, onContextAction, onE
                 <i />
                 <button onClick={() => runContextAction("addText")} type="button">Add text</button>
                 <button onClick={() => runContextAction("addRectangle")} type="button">Add rectangle</button>
+                <button onClick={() => runContextAction("addNote")} type="button">Add note</button>
               </>
             )}
             {!readOnly && stats.selectedCount > 0 && (
@@ -396,161 +483,148 @@ export function CanvasEditorShell({ activeToolId, children, onContextAction, onE
         )}
       </div>
 
-      <aside className="canvas-inspector">
-        <div className="canvas-inspector-section">
-          <span>Selection</span>
-          <strong>{stats.selectedCount === 0 ? "Page" : `${stats.selectedCount} selected`}</strong>
-        </div>
-        <div className="canvas-inspector-grid">
-          <span>Type</span>
-          <b>{stats.selectedType}</b>
-          <span>Bounds</span>
-          <b>{stats.selectedBoundsText}</b>
-          <span>Objects</span>
-          <b>{stats.shapeCount}</b>
-          <span>Zoom</span>
-          <b>{stats.zoomPercent}%</b>
-        </div>
-
-        {selectedShape && (
-          <div className="canvas-inspector-panel">
-            <div className="canvas-inspector-heading">
-              <span>Position</span>
-              <b>{selectedShape.isLocked ? "Locked" : "Editable"}</b>
-            </div>
-            <div className="canvas-inspector-field-grid">
-              {(["x", "y", "w", "h"] as CanvasBoundsNumberKey[]).map((key) => (
-                <label key={key}>
-                  <span>{key.toUpperCase()}</span>
-                  <input disabled={readOnly || selectedShape.isLocked} inputMode="numeric" onChange={(event) => onNumberChange(selectedShape.id, key, Number(event.target.value))} type="number" value={Math.round(selectedShape[key])} />
-                </label>
-              ))}
-            </div>
+      <aside className={inspectorCollapsed ? "canvas-inspector collapsed" : "canvas-inspector"}>
+        <header className="canvas-inspector-header">
+          <div>
+            <span>Inspector</span>
+            <strong>{hasSelection ? selectedShape?.name ?? `${stats.selectedCount} objects selected` : `Page · ${stats.shapeCount} objects`}</strong>
           </div>
-        )}
+          <button aria-expanded={!inspectorCollapsed} aria-label={inspectorCollapsed ? "Expand inspector" : "Collapse inspector"} onClick={() => setCanvasInspectorSnapshot(!inspectorCollapsed)} title={inspectorCollapsed ? "Expand inspector" : "Collapse inspector"} type="button"><CanvasToolIcon name="chevron" /></button>
+        </header>
 
-        {hasSelection ? (
-          <div className="canvas-inspector-panel">
-            <div className="canvas-inspector-heading">
-              <span>Style</span>
-              <b>{stats.selectedCount} selected</b>
-            </div>
-
-            <div className="canvas-inspector-control">
-              <span>Color</span>
-              <div className="canvas-color-row">
-                {colorOptions.map((color) => (
-                  <button aria-label={`Color ${color}`} className={colorValue === color ? "active" : ""} disabled={readOnly} key={color} onClick={() => onStyleChange("color", color)} style={{ background: colorPreviewMap[color] }} title={formatInspectorLabel(color)} type="button" />
-                ))}
-              </div>
-            </div>
-
-            {!lineOnlySelection && <CanvasSelectControl disabled={readOnly} label="Fill" onChange={(value) => onStyleChange("fill", value)} options={fillSelectOptions} value={fillValue} />}
-
-            <CanvasSelectControl disabled={readOnly} label="Stroke" onChange={(value) => onStyleChange("dash", value)} options={dashSelectOptions} value={dashValue} />
-
-            <label className="canvas-inspector-control">
-              <span>{lineOnlySelection ? "Width" : "Size"}</span>
-              <div className="canvas-number-row">
-                <input disabled={readOnly} max={lineOnlySelection ? maxLineSize : maxCanvasSize} min={lineOnlySelection ? minLineSize : minCanvasSize} onChange={(event) => onStyleChange("size", event.target.value)} placeholder={sizeValue === "mixed" ? "Mixed" : undefined} step="1" type="number" value={sizeValue === "mixed" ? "" : sizeValue} />
-                <b>px</b>
-              </div>
-            </label>
-
-            {selectedLineShape && (
-              <label className="canvas-inspector-control">
-                <span>Length</span>
-                <div className="canvas-number-row">
-                  <input disabled={readOnly || selectedLineShape.isLocked} max={maxLineLength} min={minLineLength} onChange={(event) => onNumberChange(selectedLineShape.id, "length", Number(event.target.value))} step="1" type="number" value={selectedLineLength} />
-                  <b>px</b>
-                </div>
-              </label>
-            )}
-
-            <label className="canvas-inspector-control">
-              <span>Opacity</span>
-              <div className="canvas-range-row">
-                <input disabled={readOnly || opacityValue === "mixed"} max="100" min="0" onChange={(event) => onStyleChange("opacity", event.target.value)} type="range" value={opacityValue === "mixed" ? "100" : Math.round(Number(opacityValue) * 100).toString()} />
-                <b>{opacityValue === "mixed" ? "Mixed" : `${Math.round(Number(opacityValue) * 100)}%`}</b>
-              </div>
-            </label>
-
-            {!lineOnlySelection && (
-              <>
-                <div className="canvas-inspector-heading compact">
-                  <span>Typography</span>
-                </div>
-
-                <CanvasSelectControl disabled={readOnly} label="Font" onChange={(value) => onStyleChange("font", value)} options={fontSelectOptions} value={fontValue} />
-
-                <CanvasSelectControl disabled={readOnly} label="Text" onChange={(value) => onStyleChange("textAlign", value)} options={textAlignSelectOptions} value={textAlignValue} />
-              </>
-            )}
-          </div>
-        ) : (
-          <div className="canvas-inspector-panel">
-            <div className="canvas-inspector-heading">
-              <span>Page</span>
-              <b>{readOnly ? "View" : "Edit"}</b>
-            </div>
-            <div className="canvas-inspector-grid flush">
-              <span>Tool</span>
-              <b>{stats.activeToolId}</b>
-              <span>Grid</span>
-              <b>{stats.gridSize} px</b>
-              <span>Snap</span>
-              <b>{stats.snapToGrid ? "On" : "Off"}</b>
-              <span>State</span>
-              <b>Autosave</b>
-            </div>
-            <div className="canvas-inspector-actions single">
-              <button disabled={readOnly} onClick={onSnapToggle} type="button">{stats.snapToGrid ? "Disable snap" : "Enable snap"}</button>
-            </div>
-          </div>
-        )}
-
-        {selectedShapes.length > 1 && (
-          <div className="canvas-inspector-panel">
-            <div className="canvas-inspector-heading">
-              <span>Selection</span>
-            </div>
-            <div className="canvas-layer-list">
-              {selectedShapes.map((shape) => (
-                <button key={shape.id} onClick={() => onSelectShape(shape.id)} type="button">
-                  <span>{shape.name}</span>
-                  <b>{shape.id.slice(0, 6)}</b>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div className="canvas-inspector-panel">
-          <div className="canvas-inspector-heading">
-            <span>Layers</span>
-            <b>{shapes.length}</b>
-          </div>
-          <div className="canvas-layer-list full">
-            {[...shapes].reverse().map((shape) => {
-              const selected = selectedShapes.some((selectedShapeItem) => selectedShapeItem.id === shape.id);
-              return (
-                <div className={selected ? "canvas-layer-row selected" : "canvas-layer-row"} key={shape.id}>
-                  <button className="canvas-layer-select" onClick={(event) => onSelectShape(shape.id, event.shiftKey || event.metaKey || event.ctrlKey)} type="button">
-                    <span>{shape.name}</span>
-                    <b>{shape.isHidden ? "Hidden" : shape.isLocked ? "Locked" : shape.id.slice(0, 6)}</b>
-                  </button>
-                  <input disabled={readOnly} onBlur={() => commitLayerName(shape)} onChange={(event) => updateLayerName(shape.id, event.target.value)} onKeyDown={(event) => handleLayerNameKeyDown(event, shape)} value={layerNameDrafts[shape.id] ?? shape.name} />
-                  <div className="canvas-layer-actions">
-                    <button aria-label={shape.isHidden ? "Show layer" : "Hide layer"} disabled={readOnly} onClick={() => onLayerAction(shape.id, shape.isHidden ? "show" : "hide")} title={shape.isHidden ? "Show" : "Hide"} type="button"><CanvasToolIcon name={shape.isHidden ? "eyeOff" : "eye"} /></button>
-                    <button aria-label={shape.isLocked ? "Unlock layer" : "Lock layer"} disabled={readOnly} onClick={() => onLayerAction(shape.id, shape.isLocked ? "unlock" : "lock")} title={shape.isLocked ? "Unlock" : "Lock"} type="button"><CanvasToolIcon name={shape.isLocked ? "lock" : "unlock"} /></button>
-                    <button aria-label="Bring forward" disabled={readOnly} onClick={() => onLayerAction(shape.id, "bringForward")} title="Forward" type="button"><CanvasToolIcon name="forward" /></button>
-                    <button aria-label="Send backward" disabled={readOnly} onClick={() => onLayerAction(shape.id, "sendBackward")} title="Backward" type="button"><CanvasToolIcon name="backward" /></button>
+        {!inspectorCollapsed && (
+          <div className="canvas-inspector-content">
+            <div className="canvas-inspector-settings">
+              {!hasSelection && (
+                <section className="canvas-inspector-panel">
+                  <div className="canvas-inspector-heading"><span>Page settings</span><b>{readOnly ? "View" : "Edit"}</b></div>
+                  <div className="canvas-inspector-grid flush">
+                    <span>Objects</span><b>{stats.shapeCount}</b>
+                    <span>Zoom</span><b>{stats.zoomPercent}%</b>
+                    <span>Grid</span><b>{stats.gridSize}px</b>
                   </div>
-                </div>
-              );
-            })}
+                  <div className="canvas-snap-control">
+                    <span><b>Snap</b><small>{stats.snapToGrid ? "On" : "Off"}</small></span>
+                    <button disabled={readOnly} onClick={onSnapToggle} type="button">{stats.snapToGrid ? "Disable" : "Enable"}</button>
+                  </div>
+                </section>
+              )}
+
+              {hasSelection && (
+                <section className="canvas-inspector-panel">
+                  <div className="canvas-inspector-heading"><span>Object</span><b>{stats.selectedType}</b></div>
+                  <div className="canvas-inspector-grid flush">
+                    <span>Selection</span><b>{stats.selectedCount}</b>
+                    <span>Bounds</span><b>{stats.selectedBoundsText}</b>
+                    <span>State</span><b>{selectedShapesLocked ? "Locked" : "Editable"}</b>
+                  </div>
+                  {selectedShape && (
+                    <div className="canvas-inspector-field-grid">
+                      {(["x", "y", "w", "h"] as CanvasBoundsNumberKey[]).map((key) => (
+                        <label key={key}>
+                          <span>{key.toUpperCase()}</span>
+                          <input disabled={readOnly || selectedShape.isLocked} inputMode="numeric" onChange={(event) => onNumberChange(selectedShape.id, key, Number(event.target.value))} type="number" value={Math.round(selectedShape[key])} />
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              )}
+
+              {hasSelection && (
+                <section className="canvas-inspector-panel">
+                  <div className="canvas-inspector-heading"><span>Appearance</span><b>{stats.selectedCount} selected</b></div>
+                  <div className="canvas-inspector-control">
+                    <span>Color</span>
+                    <div className="canvas-color-row">
+                      {colorOptions.map((color) => (
+                        <button aria-label={`Color ${color}`} className={colorValue === color ? "active" : ""} disabled={readOnly} key={color} onClick={() => onStyleChange("color", color)} style={{ background: colorPreviewMap[color] }} title={formatInspectorLabel(color)} type="button" />
+                      ))}
+                    </div>
+                  </div>
+                  {!lineOnlySelection && <CanvasSelectControl disabled={readOnly} label="Fill" onChange={(value) => onStyleChange("fill", value)} options={fillSelectOptions} value={fillValue} />}
+                  <CanvasSelectControl disabled={readOnly} label="Stroke" onChange={(value) => onStyleChange("dash", value)} options={dashSelectOptions} value={dashValue} />
+                  <label className="canvas-inspector-control">
+                    <span>{lineOnlySelection ? "Width" : "Size"}</span>
+                    <div className="canvas-number-row">
+                      <input disabled={readOnly} max={lineOnlySelection ? maxLineSize : maxCanvasSize} min={lineOnlySelection ? minLineSize : minCanvasSize} onChange={(event) => onStyleChange("size", event.target.value)} placeholder={sizeValue === "mixed" ? "Mixed" : undefined} step="1" type="number" value={sizeValue === "mixed" ? "" : sizeValue} />
+                      <b>px</b>
+                    </div>
+                  </label>
+                  {selectedLineShape && (
+                    <label className="canvas-inspector-control">
+                      <span>Length</span>
+                      <div className="canvas-number-row">
+                        <input disabled={readOnly || selectedLineShape.isLocked} max={maxLineLength} min={minLineLength} onChange={(event) => onNumberChange(selectedLineShape.id, "length", Number(event.target.value))} step="1" type="number" value={selectedLineLength} />
+                        <b>px</b>
+                      </div>
+                    </label>
+                  )}
+                  <label className="canvas-inspector-control">
+                    <span>Opacity</span>
+                    <div className="canvas-range-row">
+                      <input disabled={readOnly || opacityValue === "mixed"} max="100" min="0" onChange={(event) => onStyleChange("opacity", event.target.value)} type="range" value={opacityValue === "mixed" ? "100" : Math.round(Number(opacityValue) * 100).toString()} />
+                      <b>{opacityValue === "mixed" ? "Mixed" : `${Math.round(Number(opacityValue) * 100)}%`}</b>
+                    </div>
+                  </label>
+                </section>
+              )}
+
+              {hasSelection && !lineOnlySelection && (
+                <section className="canvas-inspector-panel">
+                  <div className="canvas-inspector-heading"><span>Text</span></div>
+                  <CanvasSelectControl disabled={readOnly} label="Font" onChange={(value) => onStyleChange("font", value)} options={fontSelectOptions} value={fontValue} />
+                  <CanvasSelectControl disabled={readOnly} label="Align" onChange={(value) => onStyleChange("textAlign", value)} options={textAlignSelectOptions} value={textAlignValue} />
+                </section>
+              )}
+
+              {selectedShapes.length > 1 && (
+                <section className="canvas-inspector-panel">
+                  <div className="canvas-inspector-heading"><span>Alignment</span><b>{selectedShapes.length} objects</b></div>
+                  <div className="canvas-alignment-actions">
+                    <button disabled={readOnly} onClick={() => onInspectorAction("alignLeft")} title="Align left" type="button">Left</button>
+                    <button disabled={readOnly} onClick={() => onInspectorAction("alignCenter")} title="Align center" type="button">Center</button>
+                    <button disabled={readOnly} onClick={() => onInspectorAction("alignRight")} title="Align right" type="button">Right</button>
+                    <button disabled={readOnly || selectedShapes.length < 3} onClick={() => onInspectorAction("distributeHorizontal")} title="Distribute horizontally" type="button">Space H</button>
+                    <button disabled={readOnly || selectedShapes.length < 3} onClick={() => onInspectorAction("distributeVertical")} title="Distribute vertically" type="button">Space V</button>
+                  </div>
+                </section>
+              )}
+
+              {hasSelection && (
+                <section className="canvas-inspector-panel">
+                  <div className="canvas-inspector-heading"><span>Layer</span></div>
+                  <div className="canvas-inspector-actions">
+                    <button disabled={readOnly} onClick={() => onInspectorAction("bringForward")} type="button">Bring forward</button>
+                    <button disabled={readOnly} onClick={() => onInspectorAction("sendBackward")} type="button">Send backward</button>
+                    <button disabled={readOnly} onClick={() => onInspectorAction(selectedShapesLocked ? "unlock" : "lock")} type="button">{selectedShapesLocked ? "Unlock" : "Lock"}</button>
+                    <button disabled={readOnly} onClick={() => onInspectorAction("duplicate")} type="button">Duplicate</button>
+                    <button disabled={readOnly} onClick={() => onInspectorAction("resetStyle")} type="button">Reset style</button>
+                    <button className="danger" disabled={readOnly} onClick={() => onInspectorAction("delete")} type="button">Delete</button>
+                  </div>
+                </section>
+              )}
+            </div>
+
+            <section className="canvas-inspector-panel canvas-layers-panel">
+              <div className="canvas-inspector-heading"><span>Layers</span><b>{shapes.length}</b></div>
+              <div className="canvas-layer-list full">
+                {[...shapes].reverse().map((shape) => {
+                  const selected = selectedShapes.some((selectedShapeItem) => selectedShapeItem.id === shape.id);
+                  return (
+                    <div className={selected ? "canvas-layer-row selected" : "canvas-layer-row"} key={shape.id}>
+                      <button aria-label={`Select ${shape.name}`} className="canvas-layer-type" onClick={(event) => onSelectShape(shape.id, event.shiftKey || event.metaKey || event.ctrlKey)} title={formatInspectorLabel(shape.type)} type="button"><CanvasToolIcon name={getShapeIconName(shape.type)} /></button>
+                      <input aria-label={`Rename ${shape.name}`} disabled={readOnly} onBlur={() => commitLayerName(shape)} onChange={(event) => updateLayerName(shape.id, event.target.value)} onKeyDown={(event) => handleLayerNameKeyDown(event, shape)} value={layerNameDrafts[shape.id] ?? shape.name} />
+                      <button aria-label={shape.isHidden ? "Show layer" : "Hide layer"} className="canvas-layer-action" disabled={readOnly} onClick={() => onLayerAction(shape.id, shape.isHidden ? "show" : "hide")} title={shape.isHidden ? "Show" : "Hide"} type="button"><CanvasToolIcon name={shape.isHidden ? "eyeOff" : "eye"} /></button>
+                      <button aria-label={shape.isLocked ? "Unlock layer" : "Lock layer"} className="canvas-layer-action" disabled={readOnly} onClick={() => onLayerAction(shape.id, shape.isLocked ? "unlock" : "lock")} title={shape.isLocked ? "Unlock" : "Lock"} type="button"><CanvasToolIcon name={shape.isLocked ? "lock" : "unlock"} /></button>
+                    </div>
+                  );
+                })}
+                {shapes.length === 0 && <p className="canvas-layer-empty">No layers yet</p>}
+              </div>
+            </section>
           </div>
-        </div>
+        )}
       </aside>
     </section>
   );
