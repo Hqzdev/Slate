@@ -23,6 +23,7 @@ __pycache__/
 
 .claude/
 apps/web/.tmp/
+apps/web/app/page 2.tsx
 
 .idea/
 .vscode/
