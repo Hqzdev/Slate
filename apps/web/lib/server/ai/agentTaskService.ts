@@ -12,7 +12,7 @@ import { aiActionExecutor } from "./actionExecutor";
 import { aiAgentSystemPrompt, aiAgentTools } from "./agentTools";
 import { createUpdateDocumentDraft } from "./documentUpdateDraft";
 import { AiDomainError, toAiDomainError } from "./errors";
-import { getGigaChatClient } from "./assistantService";
+import { getGigaChatClient } from "./gigaChatClientProvider";
 import { AiOrchestrator } from "./orchestrator";
 import type { AiDraftActionTypeValue, AiProviderMessage, AiProviderToolCall } from "./types";
 import { workspaceContextBuilder, type AiDocumentObservation } from "./workspaceContextBuilder";

@@ -54,11 +54,28 @@ export function AiIcon({ className }: IconProps) {
   );
 }
 
+export function BellIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M18.2 10.4c0-3.5-2.2-6-6.2-6s-6.2 2.5-6.2 6c0 4.1-1.6 5.2-1.6 6.4h15.6c0-1.2-1.6-2.3-1.6-6.4zM9.3 20c.5.5 1.45.8 2.7.8s2.2-.3 2.7-.8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </StrokeIcon>
+  );
+}
+
 export function CommentIcon({ className }: IconProps) {
   return (
     <StrokeIcon className={className}>
       <path d="M5.7 4.2h12.6c1.1 0 2 .9 2 2v8.2c0 1.1-.9 2-2 2H10l-4.7 3.2v-3.2c-.9-.2-1.6-1-1.6-2V6.2c0-1.1.9-2 2-2z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
       <path d="M8 8.5h8M8 12.2h5.2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </StrokeIcon>
+  );
+}
+
+export function MessengerIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M5.4 4.2h13.2c1.1 0 2 .9 2 2v8.6c0 1.1-.9 2-2 2h-7.1l-4.9 3v-3H5.4c-1.1 0-2-.9-2-2V6.2c0-1.1.9-2 2-2z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M7.5 8.6h9M7.5 12.4h6.1" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
     </StrokeIcon>
   );
 }
@@ -193,10 +210,105 @@ export function CollapseIcon({ className }: IconProps) {
   );
 }
 
+export function ChevronDownIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="m7 9.5 5 5 5-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </StrokeIcon>
+  );
+}
+
+export function PanelRightCloseIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M5.5 3.8h13c1 0 1.7.7 1.7 1.7v13c0 1-.7 1.7-1.7 1.7h-13c-1 0-1.7-.7-1.7-1.7v-13c0-1 .7-1.7 1.7-1.7zM15 3.8v16.4M8.2 9.2l2.8 2.8-2.8 2.8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </StrokeIcon>
+  );
+}
+
 export function SortIcon({ className }: IconProps) {
   return (
     <StrokeIcon className={className}>
       <path d="M7 5h10M7 12h7M7 19h4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </StrokeIcon>
+  );
+}
+
+export function SidebarToggleIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <rect x="4" y="4" width="16" height="16" rx="3.2" stroke="currentColor" strokeWidth="1.9" />
+      <path d="M9.4 4v16M15.8 9.2 13 12l2.8 2.8" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </StrokeIcon>
+  );
+}
+
+export function SidebarDashboardIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <rect x="4" y="4" width="6.6" height="6.6" rx="2" stroke="currentColor" strokeWidth="1.9" />
+      <rect x="13.4" y="4" width="6.6" height="4.4" rx="1.8" stroke="currentColor" strokeWidth="1.9" />
+      <rect x="4" y="13.4" width="6.6" height="6.6" rx="2" stroke="currentColor" strokeWidth="1.9" />
+      <rect x="13.4" y="11.2" width="6.6" height="8.8" rx="2" stroke="currentColor" strokeWidth="1.9" />
+    </StrokeIcon>
+  );
+}
+
+export function SidebarActivityIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M4 13h3.2l2.15-5.8 4.1 10.05 2.2-5.15H20" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </StrokeIcon>
+  );
+}
+
+export function SidebarCommandIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M8.8 8.8H6.6a2.7 2.7 0 1 1 2.7-2.7v11.8a2.7 2.7 0 1 1-2.7-2.7h10.8a2.7 2.7 0 1 1-2.7 2.7V6.1a2.7 2.7 0 1 1 2.7 2.7h-2.2" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </StrokeIcon>
+  );
+}
+
+export function SidebarAiIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M12 3.6c.58 3.34 2.46 5.22 5.8 5.8-3.34.58-5.22 2.46-5.8 5.8-.58-3.34-2.46-5.22-5.8-5.8 3.34-.58 5.22-2.46 5.8-5.8zM18.2 14.5c.27 1.55 1.15 2.43 2.7 2.7-1.55.27-2.43 1.15-2.7 2.7-.27-1.55-1.15-2.43-2.7-2.7 1.55-.27 2.43-1.15 2.7-2.7zM5.3 15.4c.2 1.13.87 1.8 2 2-.2.2-1.8.87-2 2-.2-1.13-.87-1.8-2-2 1.13-.2 1.8-.87 2-2z" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </StrokeIcon>
+  );
+}
+
+export function SidebarPlusIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M12 5.2v13.6M5.2 12h13.6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </StrokeIcon>
+  );
+}
+
+export function SidebarRefreshIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M19.1 8a7.8 7.8 0 1 0 .45 5.7M19.1 8V4.7M19.1 8h-3.3" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </StrokeIcon>
+  );
+}
+
+export function SidebarSettingsIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <circle cx="12" cy="12" r="3.05" stroke="currentColor" strokeWidth="1.9" />
+      <path d="m19.25 13.35 1.25.96-1.9 3.3-1.48-.6a7.74 7.74 0 0 1-2.34 1.35l-.24 1.55h-3.8l-.24-1.55a7.74 7.74 0 0 1-2.34-1.35l-1.48.6-1.9-3.3 1.25-.96a7.2 7.2 0 0 1 0-2.7l-1.25-.96 1.9-3.3 1.48.6a7.74 7.74 0 0 1 2.34-1.35l.24-1.55h3.8l.24 1.55a7.74 7.74 0 0 1 2.34 1.35l1.48-.6 1.9 3.3-1.25.96a7.2 7.2 0 0 1 0 2.7z" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </StrokeIcon>
+  );
+}
+
+export function SidebarSupportIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M4.8 12.8v-1.4a7.2 7.2 0 0 1 14.4 0v1.4" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M6.2 11.6h1.5c.7 0 1.2.5 1.2 1.2v3.1c0 .7-.5 1.2-1.2 1.2H6.2c-.8 0-1.4-.6-1.4-1.4V13c0-.8.6-1.4 1.4-1.4zM16.3 11.6h1.5c.8 0 1.4.6 1.4 1.4v2.7c0 .8-.6 1.4-1.4 1.4h-1.5c-.7 0-1.2-.5-1.2-1.2v-3.1c0-.7.5-1.2 1.2-1.2z" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M15.2 18.4h-2.1c-.75 0-1.35-.6-1.35-1.35v-.2" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
     </StrokeIcon>
   );
 }

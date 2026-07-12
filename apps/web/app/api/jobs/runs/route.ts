@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
       language: result.document.language,
       runId: result.run.id,
       source: result.document.content
-    });
+    }, { jobId: result.run.id });
 
     return NextResponse.json({ run: result.run }, { status: 202 });
   } catch (error) {

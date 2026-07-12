@@ -10,9 +10,11 @@ type SettingsPageId = "profile" | "general" | "members" | "permissions" | "appea
 type SettingsUser = {
   color: string;
   email: string;
+  emailVerifiedAt?: string | null;
   id: string;
   initials: string;
   name: string;
+  username?: string | null;
 };
 
 type SettingsMember = {
@@ -80,6 +82,7 @@ type SettingsModalProps = {
   onProfileUpdated: (user: SettingsUser) => void;
   onThemeChange: (theme: WorkspaceTheme) => void;
   onWorkspaceIdentityUpdated: (workspace: { abbreviation: string; id: string; name: string; slug: string }) => void;
+  onWorkspaceOwnershipTransferred: () => Promise<void>;
   onWorkspaceSettingsUpdated: (settings: SettingsWorkspaceSettings) => void;
   theme: WorkspaceTheme;
   workspace: SettingsWorkspace | null;
@@ -145,12 +148,11 @@ const shortcutRows = [
   ["Go to tab 1–9", "⌥ ⌘ 1–9"],
   ["Dashboard", "⇧ ⌘ D"],
   ["Activity", "⇧ ⌘ E"],
-  ["Comments", "⇧ ⌘ M"],
   ["Toggle theme", "⇧ ⌘ L"],
   ["Close settings", "Esc"]
 ];
 
-export function SettingsModal({ activeMemberRole, activeUser, confirmDeleteFiles, focusAccount = false, onClose, onConfirmDeleteFilesChange, onLogout, onProfileUpdated, onThemeChange, onWorkspaceIdentityUpdated, onWorkspaceSettingsUpdated, theme, workspace, workspacesCount }: SettingsModalProps) {
+export function SettingsModal({ activeMemberRole, activeUser, confirmDeleteFiles, focusAccount = false, onClose, onConfirmDeleteFilesChange, onLogout, onProfileUpdated, onThemeChange, onWorkspaceIdentityUpdated, onWorkspaceOwnershipTransferred, onWorkspaceSettingsUpdated, theme, workspace, workspacesCount }: SettingsModalProps) {
   const [selectedPage, setSelectedPage] = useState<SettingsPageId>(focusAccount ? "profile" : "general");
   const [searchQuery, setSearchQuery] = useState("");
   const [openLastWorkspace, setOpenLastWorkspace] = useState(true);
@@ -215,7 +217,7 @@ export function SettingsModal({ activeMemberRole, activeUser, confirmDeleteFiles
                 <WorkspaceSettings mode="general" showHeader={false} key={workspace?.id ?? "empty-workspace"} activeMemberRole={activeMemberRole} workspace={workspace} workspacesCount={workspacesCount} onWorkspaceIdentityUpdated={onWorkspaceIdentityUpdated} onWorkspaceSettingsUpdated={onWorkspaceSettingsUpdated} />
               </>
             )}
-            {selectedPage === "members" && <AgentsSettings activeUser={activeUser} members={workspace?.members ?? []} />}
+            {selectedPage === "members" && <AgentsSettings activeMemberRole={activeMemberRole} activeUser={activeUser} key={workspace?.id ?? "empty-workspace"} members={workspace?.members ?? []} onOwnershipTransferred={onWorkspaceOwnershipTransferred} workspace={workspace} />}
             {selectedPage === "permissions" && (
               <>
                 <WorkspaceSettings mode="permissions" key={workspace?.id ?? "empty-workspace"} activeMemberRole={activeMemberRole} workspace={workspace} workspacesCount={workspacesCount} onWorkspaceIdentityUpdated={onWorkspaceIdentityUpdated} onWorkspaceSettingsUpdated={onWorkspaceSettingsUpdated} />
@@ -313,6 +315,7 @@ function ProfileSettings({ activeUser, onLogout, onProfileUpdated }: { activeUse
   const [profile, setProfile] = useState<ProfilePayload | null>(null);
   const [name, setName] = useState(activeUser?.name ?? "");
   const [email, setEmail] = useState(activeUser?.email ?? "");
+  const [username, setUsername] = useState(activeUser?.username ?? "");
   const [color, setColor] = useState(activeUser?.color ?? "blue");
   const [currentPassword, setCurrentPassword] = useState("");
   const [passwordCurrent, setPasswordCurrent] = useState("");
@@ -337,6 +340,7 @@ function ProfileSettings({ activeUser, onLogout, onProfileUpdated }: { activeUse
         setProfile(nextProfile);
         setName(nextProfile.user.name);
         setEmail(nextProfile.user.email);
+        setUsername(nextProfile.user.username ?? "");
         setColor(nextProfile.user.color);
         onProfileUpdated(nextProfile.user);
       } catch (loadError) {
@@ -361,7 +365,7 @@ function ProfileSettings({ activeUser, onLogout, onProfileUpdated }: { activeUse
 
     try {
       const response = await fetch("/api/profile", {
-        body: JSON.stringify({ color, currentPassword, email, name }),
+        body: JSON.stringify({ color, currentPassword, email, name, username }),
         headers: { "content-type": "application/json" },
         method: "PATCH"
       });
@@ -436,6 +440,12 @@ function ProfileSettings({ activeUser, onLogout, onProfileUpdated }: { activeUse
     }
   }
 
+  async function requestEmailVerification() {
+    const response = await fetch("/api/auth/resend-verification", { body: JSON.stringify({ email }), headers: { "content-type": "application/json" }, method: "POST" });
+    if (response.ok) window.location.assign(`/verify-email?email=${encodeURIComponent(email)}`);
+    else setError("Could not send a verification code");
+  }
+
   const devices = profile?.devices ?? [];
 
   return (
@@ -454,6 +464,11 @@ function ProfileSettings({ activeUser, onLogout, onProfileUpdated }: { activeUse
               <label className="settings-input-row">
                 <span>Email</span>
                 <input autoComplete="email" inputMode="email" value={email} onChange={(event) => setEmail(event.target.value)} />
+              </label>
+              {!profile?.user.emailVerifiedAt && <div className="profile-email-verification"><span>Email is not verified</span><button className="settings-secondary-control" onClick={() => void requestEmailVerification()} type="button">Verify email</button></div>}
+              <label className="settings-input-row">
+                <span>Username</span>
+                <input autoCapitalize="none" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} />
               </label>
               <label className="settings-input-row">
                 <span>Current password</span>
@@ -541,7 +556,42 @@ function ShortcutsSettings() {
   );
 }
 
-function AgentsSettings({ activeUser, members }: { activeUser: SettingsUser | null; members: SettingsMember[] }) {
+function AgentsSettings({ activeMemberRole, activeUser, members, onOwnershipTransferred, workspace }: { activeMemberRole: string; activeUser: SettingsUser | null; members: SettingsMember[]; onOwnershipTransferred: () => Promise<void>; workspace: SettingsWorkspace | null }) {
+  const [candidateId, setCandidateId] = useState<string | null>(null);
+  const [confirmationName, setConfirmationName] = useState("");
+  const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
+  const candidate = members.find((member) => member.id === candidateId) ?? null;
+  const canManageOwnership = activeMemberRole === "owner";
+  const confirmationMatches = Boolean(workspace && confirmationName === workspace.name);
+
+  function selectCandidate(memberId: string) {
+    setCandidateId(memberId);
+    setConfirmationName("");
+    setError("");
+  }
+
+  async function transferOwnership() {
+    if (!workspace || !candidate || !confirmationMatches || pending || !canManageOwnership) return;
+    setPending(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/workspaces/${workspace.id}/ownership`, {
+        body: JSON.stringify({ memberUserId: candidate.id, workspaceName: confirmationName }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      });
+      if (!response.ok) throw new Error(await readApiError(response, "Ownership transfer failed"));
+      setCandidateId(null);
+      setConfirmationName("");
+      await onOwnershipTransferred();
+    } catch (transferError) {
+      setError(transferError instanceof Error ? transferError.message : "Ownership transfer failed");
+    } finally {
+      setPending(false);
+    }
+  }
+
   return (
     <>
       <SettingsHeader description="People and roles in the current workspace." title="Members" />
@@ -555,11 +605,35 @@ function AgentsSettings({ activeUser, members }: { activeUser: SettingsUser | nu
                 <strong>{member.name}{activeUser?.email === member.email ? " · You" : ""}</strong>
                 <p>{member.email}</p>
               </div>
-              <small>{member.role}</small>
+              <div className="settings-member-controls">
+                <small>{member.role}</small>
+                {canManageOwnership && activeUser?.id !== member.id && (
+                  <button disabled={pending} onClick={() => selectCandidate(member.id)} type="button">Transfer ownership</button>
+                )}
+              </div>
             </div>
           ))}
         </div>
       </SettingsSection>
+      {canManageOwnership && workspace && candidate && (
+        <SettingsSection title="Ownership transfer">
+          <div className="settings-ownership-transfer">
+            <div>
+              <strong>Transfer ownership to {candidate.name}</strong>
+              <p>You will become an editor. Type the workspace name exactly to confirm this action.</p>
+            </div>
+            <label>
+              <span>Type “{workspace.name}”</span>
+              <input autoComplete="off" disabled={pending} onChange={(event) => { setConfirmationName(event.target.value); setError(""); }} placeholder={workspace.name} spellCheck={false} value={confirmationName} />
+            </label>
+            {error && <p className="settings-error-text">{error}</p>}
+            <div className="settings-ownership-actions">
+              <button disabled={pending} onClick={() => { setCandidateId(null); setConfirmationName(""); setError(""); }} type="button">Cancel</button>
+              <button disabled={!confirmationMatches || pending} onClick={() => void transferOwnership()} type="button">{pending ? "Transferring" : "Transfer ownership"}</button>
+            </div>
+          </div>
+        </SettingsSection>
+      )}
     </>
   );
 }
@@ -644,9 +718,6 @@ function WorkspaceSettings({ activeMemberRole, mode, onWorkspaceIdentityUpdated,
             </SettingsRow>
             <SettingsRow description="Editors can archive or delete files from the shared file tree." title="Editor file deletion">
               <SettingsSwitch checked={draft.allowEditorFileDelete} disabled={!canManageWorkspace} onChange={(checked) => updateDraft({ allowEditorFileDelete: checked })} />
-            </SettingsRow>
-            <SettingsRow description="Viewers can leave comments without getting edit rights." title="Viewer comments">
-              <SettingsSwitch checked={draft.allowViewerComments} disabled={!canManageWorkspace} onChange={(checked) => updateDraft({ allowViewerComments: checked })} />
             </SettingsRow>
           </SettingsSection>}
           {mode === "general" && <SettingsSection title="Collaboration">

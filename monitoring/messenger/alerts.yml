@@ -1,0 +1,37 @@
+groups:
+  - name: slate-messenger
+    rules:
+      - alert: MessengerOutboxBacklog
+        expr: slate_messenger_outbox_events{status="pending"} > 1000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Messenger outbox backlog is growing
+      - alert: MessengerOutboxDeadLetters
+        expr: slate_messenger_outbox_events{status="failed"} > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Messenger outbox contains failed events
+      - alert: MessengerMediaBacklog
+        expr: sum(slate_messenger_media_jobs{status=~"pending|processing"}) > 500
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Messenger media processing backlog is growing
+      - alert: MessengerAiExtractionFailures
+        expr: slate_messenger_ai_extractions{status="failed"} > 10
+        labels:
+          severity: warning
+        annotations:
+          summary: Messenger AI attachment extraction failures increased
+      - alert: MessengerServiceUnavailable
+        expr: up{job=~"slate-messenger-(realtime|media)"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: A Messenger service is unavailable

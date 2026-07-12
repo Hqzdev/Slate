@@ -1,0 +1,26 @@
+{
+  "title": "Slate Messenger",
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "title": "Realtime connections",
+      "type": "timeseries",
+      "targets": [{ "expr": "slate_messenger_realtime_connections" }]
+    },
+    {
+      "title": "Outbox backlog",
+      "type": "timeseries",
+      "targets": [{ "expr": "sum by (status) (slate_messenger_outbox_events)" }]
+    },
+    {
+      "title": "Media jobs",
+      "type": "timeseries",
+      "targets": [{ "expr": "sum by (status) (slate_messenger_media_jobs)" }]
+    },
+    {
+      "title": "AI extractions",
+      "type": "timeseries",
+      "targets": [{ "expr": "sum by (status) (slate_messenger_ai_extractions)" }]
+    }
+  ]
+}

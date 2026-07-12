@@ -12,6 +12,16 @@ const child = spawn(process.execPath, [nextExecutable, ...process.argv.slice(2)]
   },
   stdio: "inherit"
 });
+let stopping = false;
+
+function stop(signal) {
+  if (stopping) return;
+  stopping = true;
+  child.kill(signal);
+}
+
+process.once("SIGINT", () => stop("SIGINT"));
+process.once("SIGTERM", () => stop("SIGTERM"));
 
 child.on("error", (error) => {
   console.error(error.message);
@@ -19,6 +29,10 @@ child.on("error", (error) => {
 });
 
 child.on("exit", (code, signal) => {
+  if (stopping) {
+    process.exitCode = 0;
+    return;
+  }
   if (signal) {
     process.kill(process.pid, signal);
     return;

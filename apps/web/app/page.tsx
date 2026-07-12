@@ -1,6 +1,8 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { BrandMark } from "@/components/BrandMark";
 import { LandingWorkspaceGraph } from "@/components/LandingWorkspaceGraph";
+import { authService } from "@/lib/server/auth";
 
 const navItems = [
   ["Workflow", "#workflow"],
@@ -28,7 +30,10 @@ const securityItems = [
   ["Activity trail", "Teams can follow what changed, who changed it, and where it happened."]
 ];
 
-export default function LandingPage() {
+export default async function LandingPage() {
+  const user = await authService.getCurrentUser();
+  if (user) redirect("/workspace");
+
   return (
     <main className="site-shell slate-landing" id="top">
       <header className="landing-header">

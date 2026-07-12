@@ -49,22 +49,42 @@ type WorkspaceAccessClient = {
       };
     } | null>;
   };
+  workspaceBlock: {
+    findUnique(input: {
+      where: {
+        userId_workspaceId: {
+          userId: string;
+          workspaceId: string;
+        };
+      };
+    }): Promise<{ id: string } | null>;
+  };
 };
 
 export class WorkspaceAccessPolicy {
   constructor(private readonly client: WorkspaceAccessClient = prisma) {}
 
   async requireWorkspaceRole(userId: string, workspaceId: string, roles: WorkspaceRole[]) {
-    const member = await this.client.workspaceMember.findUnique({
-      where: {
-        userId_workspaceId: {
-          userId,
-          workspaceId
+    const [member, block] = await Promise.all([
+      this.client.workspaceMember.findUnique({
+        where: {
+          userId_workspaceId: {
+            userId,
+            workspaceId
+          }
         }
-      }
-    });
+      }),
+      this.client.workspaceBlock.findUnique({
+        where: {
+          userId_workspaceId: {
+            userId,
+            workspaceId
+          }
+        }
+      })
+    ]);
 
-    if (!member || !roles.includes(member.role)) {
+    if (block || !member || !roles.includes(member.role)) {
       throw new Error("Workspace access denied");
     }
 
@@ -83,9 +103,23 @@ export class WorkspaceAccessPolicy {
     return this.requireWorkspaceRole(userId, workspaceId, ["owner"]);
   }
 
+  async requireWorkspaceLogReader(userId: string, workspaceId: string) {
+    return this.requireWorkspaceOwner(userId, workspaceId);
+  }
+
   async authorizeRealtimeRoom(userId: string, roomName: string): Promise<RealtimeRoomGrant | null> {
     const parsedRoom = this.parseRoomName(roomName);
     if (!parsedRoom) return null;
+
+    const block = await this.client.workspaceBlock.findUnique({
+      where: {
+        userId_workspaceId: {
+          userId,
+          workspaceId: parsedRoom.workspaceId
+        }
+      }
+    });
+    if (block) return null;
 
     const member = await this.client.workspaceMember.findUnique({
       include: { user: true },

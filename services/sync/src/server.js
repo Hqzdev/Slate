@@ -32,6 +32,7 @@ const shutdownPersistRetryMs = 250;
 const shadowIdleReleaseMs = 30_000;
 const maximumInternalRequestBytes = 1_048_576;
 const textReplacementPath = "/internal/realtime/text-replace";
+const accessRevocationChannel = "slate:sync:access-revoked";
 const documents = new Map();
 const documentLoads = new Map();
 const prisma = new PrismaClient();
@@ -563,6 +564,19 @@ async function healthPayload() {
 
 redisSubscriber.on("message", (channel, message) => {
   if (shuttingDown) return;
+  if (channel === accessRevocationChannel) {
+    try {
+      const revocation = JSON.parse(message);
+      if (typeof revocation.userId !== "string" || typeof revocation.workspaceId !== "string") return;
+      for (const room of documents.values()) {
+        if (room.workspaceId !== revocation.workspaceId) continue;
+        for (const socket of room.sockets) {
+          if (socket.identity?.id === revocation.userId) socket.close(4003, "Workspace access revoked");
+        }
+      }
+    } catch {}
+    return;
+  }
   for (const room of documents.values()) {
     if (room.channel === channel) {
       realtimeUpdateValidator.apply(room, Buffer.from(message, "base64"), redisOrigin);
@@ -571,6 +585,8 @@ redisSubscriber.on("message", (channel, message) => {
     }
   }
 });
+
+void redisSubscriber.subscribe(accessRevocationChannel).catch(() => undefined);
 
 const server = createServer(async (request, response) => {
   const requestUrl = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);

@@ -19,11 +19,105 @@ enum WorkspaceRole {
   viewer
 }
 
+enum UserNotificationType {
+  workspace_invite
+}
+
+enum MessengerConversationKind {
+  general
+  direct
+}
+
+enum MessengerMembershipState {
+  active
+  revoked
+}
+
+enum MessengerAuthorKind {
+  member
+  slate_ai
+  system
+}
+
+enum MessengerOutboxStatus {
+  pending
+  published
+  failed
+}
+
+enum MessengerAttachmentKind {
+  image
+  video
+  file
+}
+
+enum MessengerAttachmentStatus {
+  reserved
+  uploaded
+  scanning
+  ready
+  attached
+  rejected
+  expired
+  deleting
+}
+
+enum MessengerMediaJobStatus {
+  pending
+  queued
+  processing
+  completed
+  failed
+}
+
+enum MessengerPayloadEncoding {
+  server_aead_v1
+}
+
+enum MessengerKeyEnvelopeState {
+  active
+  decrypt_only
+  retired
+}
+
+enum MessengerDeletionTombstoneStatus {
+  pending
+  completed
+}
+
+enum MessengerDeletionResourceType {
+  message
+}
+
+enum MessengerAiInvocationStatus {
+  skipped
+  queued
+  running
+  completed
+  failed
+  cancelled
+}
+
+enum MessengerAiProviderDispatchState {
+  not_dispatched
+  dispatching
+  dispatched
+  outcome_unknown
+}
+
+enum MessengerAiAttachmentExtractionStatus {
+  pending
+  processing
+  completed
+  failed
+}
+
 enum JobStatus {
   pending
   running
   completed
   failed
+  cancelled
 }
 
 enum FileNodeKind {
@@ -89,24 +183,57 @@ enum AiAgentActionType {
 }
 
 model User {
-  id              String            @id @default(cuid())
-  email           String            @unique
-  name            String
-  passwordHash    String?
-  initials        String
-  color           String
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
-  activityEvents  ActivityEvent[]
-  comments        DocumentComment[]
-  memberships     WorkspaceMember[]
-  jobRuns         JobRun[]
-  sessions        Session[]
-  invitesCreated  WorkspaceInvite[] @relation("InviteCreator")
-  invitesAccepted WorkspaceInvite[] @relation("InviteAccepter")
-  aiConversations AiConversation[]
-  aiDraftActions  AiDraftAction[]
-  aiAgentTasks    AiAgentTask[]
+  id                            String                        @id @default(cuid())
+  email                         String                        @unique
+  emailVerifiedAt               DateTime?
+  name                          String
+  username                      String?                       @unique
+  passwordHash                  String?
+  initials                      String
+  color                         String
+  createdAt                     DateTime                      @default(now())
+  updatedAt                     DateTime                      @updatedAt
+  activityEvents                ActivityEvent[]
+  comments                      DocumentComment[]
+  memberships                   WorkspaceMember[]
+  jobRuns                       JobRun[]
+  sessions                      Session[]
+  invitesCreated                WorkspaceInvite[]             @relation("InviteCreator")
+  invitesAccepted               WorkspaceInvite[]             @relation("InviteAccepter")
+  invitesReceived               WorkspaceInvite[]             @relation("InviteRecipient")
+  notifications                 UserNotification[]
+  workspacesCreated             Workspace[]                   @relation("WorkspaceCreator")
+  workspaceBlocks               WorkspaceBlock[]              @relation("BlockedUser")
+  blocksCreated                 WorkspaceBlock[]              @relation("BlockCreator")
+  aiConversations               AiConversation[]
+  aiDraftActions                AiDraftAction[]
+  aiAgentTasks                  AiAgentTask[]
+  messengerConversationsCreated MessengerConversation[]       @relation("MessengerConversationCreator")
+  messengerMemberships          MessengerConversationMember[]
+  messengerMessages             MessengerMessage[]            @relation("MessengerMessageAuthor")
+  messengerReactions            MessengerMessageReaction[]
+  messengerAttachmentsCreated   MessengerMessageAttachment[]  @relation("MessengerAttachmentCreator")
+  messengerAiInvocations        MessengerAiInvocation[]       @relation("MessengerAiInvocationRequester")
+  messengerAiHandoffs           MessengerAiHandoff[]          @relation("MessengerAiHandoffRequester")
+  emailVerificationTokens       EmailVerificationToken[]
+  onboardingDiscoverySource     String?
+  onboardingIntendedUse         String?
+  onboardingRole                String?
+  onboardingCompletedAt         DateTime?
+  productGuideCompletedAt       DateTime?
+}
+
+model EmailVerificationToken {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  resendCount Int    @default(0)
+  resendWindowStartedAt DateTime @default(now())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
 }
 
 model Session {
@@ -127,22 +254,33 @@ model Session {
 }
 
 model Workspace {
-  id              String              @id @default(cuid())
-  slug            String              @unique
-  name            String
-  createdAt       DateTime            @default(now())
-  updatedAt       DateTime            @updatedAt
-  activity        ActivityEvent[]
-  comments        DocumentComment[]
-  members         WorkspaceMember[]
-  documents       Document[]
-  fileNodes       WorkspaceFileNode[]
-  jobRuns         JobRun[]
-  invites         WorkspaceInvite[]
-  settings        WorkspaceSettings?
-  aiConversations AiConversation[]
-  aiDraftActions  AiDraftAction[]
-  aiAgentTasks    AiAgentTask[]
+  id                     String                       @id @default(cuid())
+  slug                   String                       @unique
+  name                   String
+  createdAt              DateTime                     @default(now())
+  updatedAt              DateTime                     @updatedAt
+  createdByUserId        String
+  activity               ActivityEvent[]
+  comments               DocumentComment[]
+  members                WorkspaceMember[]
+  documents              Document[]
+  fileNodes              WorkspaceFileNode[]
+  jobRuns                JobRun[]
+  invites                WorkspaceInvite[]
+  notifications          UserNotification[]
+  blocks                 WorkspaceBlock[]
+  createdBy              User                         @relation("WorkspaceCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  settings               WorkspaceSettings?
+  aiConversations        AiConversation[]
+  aiDraftActions         AiDraftAction[]
+  aiAgentTasks           AiAgentTask[]
+  messengerConversations MessengerConversation[]
+  messengerOutboxEvents  MessengerOutboxEvent[]
+  messengerKeyEnvelopes  MessengerKeyEnvelope[]
+  messengerAttachments   MessengerMessageAttachment[]
+  messengerMediaJobs     MessengerMediaJob[]
+  messengerAiInvocations MessengerAiInvocation[]
+  messengerDeletionTombstones MessengerDeletionTombstone[]
 }
 
 model WorkspaceSettings {
@@ -157,6 +295,7 @@ model WorkspaceSettings {
   fileTreeSortMode         String        @default("manual")
   autoSaveEnabled          Boolean       @default(true)
   retentionDays            Int           @default(90)
+  messengerAiEnabled       Boolean       @default(true)
   exportIncludesActivity   Boolean       @default(true)
   createdAt                DateTime      @default(now())
   updatedAt                DateTime      @updatedAt
@@ -165,34 +304,382 @@ model WorkspaceSettings {
 }
 
 model WorkspaceInvite {
-  id               String        @id @default(cuid())
-  tokenHash        String        @unique
+  id               String            @id @default(cuid())
+  tokenHash        String            @unique
   email            String?
   role             WorkspaceRole
   expiresAt        DateTime
   acceptedAt       DateTime?
-  createdAt        DateTime      @default(now())
+  declinedAt       DateTime?
+  revokedAt        DateTime?
+  createdAt        DateTime          @default(now())
   workspaceId      String
   createdByUserId  String
   acceptedByUserId String?
-  workspace        Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  createdBy        User          @relation("InviteCreator", fields: [createdByUserId], references: [id], onDelete: Cascade)
-  acceptedBy       User?         @relation("InviteAccepter", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+  recipientUserId  String?
+  workspace        Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy        User              @relation("InviteCreator", fields: [createdByUserId], references: [id], onDelete: Cascade)
+  acceptedBy       User?             @relation("InviteAccepter", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+  recipient        User?             @relation("InviteRecipient", fields: [recipientUserId], references: [id], onDelete: Cascade)
+  notification     UserNotification?
 
   @@index([workspaceId, createdAt])
   @@index([expiresAt])
+  @@index([recipientUserId, createdAt])
 }
 
 model WorkspaceMember {
-  id          String        @id @default(cuid())
-  role        WorkspaceRole
-  createdAt   DateTime      @default(now())
-  userId      String
-  workspaceId String
-  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  id                     String        @id @default(cuid())
+  role                   WorkspaceRole
+  messengerAccessVersion Int           @default(1)
+  createdAt              DateTime      @default(now())
+  userId                 String
+  workspaceId            String
+  user                   User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace              Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@unique([userId, workspaceId])
+  @@index([workspaceId, userId])
+}
+
+model WorkspaceBlock {
+  id              String    @id @default(cuid())
+  createdAt       DateTime  @default(now())
+  userId          String
+  workspaceId     String
+  blockedByUserId String
+  user            User      @relation("BlockedUser", fields: [userId], references: [id], onDelete: Cascade)
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  blockedBy       User      @relation("BlockCreator", fields: [blockedByUserId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, workspaceId])
+  @@index([workspaceId, createdAt])
+}
+
+model UserNotification {
+  id          String               @id @default(cuid())
+  type        UserNotificationType
+  createdAt   DateTime             @default(now())
+  readAt      DateTime?
+  recipientId String
+  workspaceId String
+  inviteId    String               @unique
+  recipient   User                 @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+  workspace   Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invite      WorkspaceInvite      @relation(fields: [inviteId], references: [id], onDelete: Cascade)
+
+  @@index([recipientId, createdAt])
+}
+
+model MessengerConversation {
+  id                   String                        @id @default(cuid())
+  kind                 MessengerConversationKind
+  generalKey           String?                       @unique
+  directPairKey        String?
+  activatedAt          DateTime?
+  lastMessageSequence  BigInt                        @default(0)
+  retainedFromSequence BigInt                        @default(1)
+  lastMessageAt        DateTime?
+  createdAt            DateTime                      @default(now())
+  updatedAt            DateTime                      @updatedAt
+  workspaceId          String
+  createdByUserId      String?
+  workspace            Workspace                     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy            User?                         @relation("MessengerConversationCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  members              MessengerConversationMember[]
+  messages             MessengerMessage[]
+  outboxEvents         MessengerOutboxEvent[]
+  attachments          MessengerMessageAttachment[]
+  aiInvocations        MessengerAiInvocation[]
+
+  @@unique([workspaceId, directPairKey])
+  @@index([workspaceId, kind])
+  @@index([workspaceId, lastMessageAt, id])
+}
+
+model MessengerConversationMember {
+  id                  String                   @id @default(cuid())
+  state               MessengerMembershipState @default(active)
+  joinedAt            DateTime                 @default(now())
+  revokedAt           DateTime?
+  historyFromSequence BigInt                   @default(1)
+  openedAt            DateTime?
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+  conversationId      String
+  userId              String
+  conversation        MessengerConversation    @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user                User                     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  receipt             MessengerMessageReceipt?
+
+  @@unique([conversationId, userId])
+  @@index([conversationId, state])
+  @@index([userId, state, updatedAt])
+}
+
+model MessengerMessage {
+  id                 String                       @id @default(cuid())
+  sequence           BigInt
+  authorKind         MessengerAuthorKind
+  authorUserId       String?
+  clientRequestId    String?
+  requestFingerprint String?
+  bodyCiphertext     Bytes?
+  bodyNonce          Bytes?
+  bodyKeyVersion     Int?
+  bodyEncoding       MessengerPayloadEncoding     @default(server_aead_v1)
+  inReplyToMessageId String?
+  deletingAt         DateTime?
+  deletedAt          DateTime?
+  createdAt          DateTime                     @default(now())
+  conversationId     String
+  conversation       MessengerConversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  author             User?                        @relation("MessengerMessageAuthor", fields: [authorUserId], references: [id], onDelete: Restrict)
+  reactions          MessengerMessageReaction[]
+  attachments        MessengerMessageAttachment[]
+  sourceAiInvocation MessengerAiInvocation?      @relation("MessengerAiSourceMessage")
+  responseAiInvocation MessengerAiInvocation?    @relation("MessengerAiResponseMessage")
+
+  @@unique([conversationId, sequence])
+  @@unique([conversationId, authorUserId, clientRequestId])
+  @@index([authorUserId, createdAt])
+  @@index([conversationId, inReplyToMessageId])
+  @@index([conversationId, deletingAt, deletedAt, sequence])
+}
+
+model MessengerMessageReceipt {
+  id                       String                      @id @default(cuid())
+  deliveredThroughSequence BigInt                      @default(0)
+  readThroughSequence      BigInt                      @default(0)
+  deliveredAt              DateTime?
+  readAt                   DateTime?
+  updatedAt                DateTime                    @updatedAt
+  conversationId           String
+  userId                   String
+  member                   MessengerConversationMember @relation(fields: [conversationId, userId], references: [conversationId, userId], onDelete: Cascade)
+
+  @@unique([conversationId, userId])
+  @@index([userId, updatedAt])
+}
+
+model MessengerMessageReaction {
+  id        String           @id @default(cuid())
+  emoji     String
+  createdAt DateTime         @default(now())
+  messageId String
+  userId    String
+  message   MessengerMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([messageId, userId, emoji])
+  @@index([userId, createdAt])
+}
+
+model MessengerMessageAttachment {
+  id                  String                    @id
+  kind                MessengerAttachmentKind
+  status              MessengerAttachmentStatus @default(reserved)
+  storageKey          String                    @unique
+  thumbnailStorageKey String?                   @unique
+  posterStorageKey    String?                   @unique
+  objectEtag          String?
+  objectVersion       String?
+  checksumSha256      String?
+  fileNameCiphertext  Bytes
+  fileNameNonce       Bytes
+  fileNameKeyVersion  Int
+  declaredContentType String
+  declaredByteSize    BigInt
+  detectedContentType String?
+  verifiedByteSize    BigInt?
+  width               Int?
+  height              Int?
+  durationMs          Int?
+  rejectionCode       String?
+  reservedAt          DateTime                  @default(now())
+  uploadedAt          DateTime?
+  scanStartedAt       DateTime?
+  readyAt             DateTime?
+  attachedAt          DateTime?
+  expiresAt           DateTime
+  deletedAt           DateTime?
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+  workspaceId         String
+  conversationId      String
+  createdByUserId     String
+  messageId           String?
+  workspace           Workspace                 @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversation        MessengerConversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  createdBy           User                      @relation("MessengerAttachmentCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  message             MessengerMessage?         @relation(fields: [messageId], references: [id], onDelete: Restrict)
+  mediaJob            MessengerMediaJob?
+  aiInvocations       MessengerAiInvocationAttachment[]
+
+  @@index([workspaceId, createdByUserId, status, expiresAt])
+  @@index([conversationId, status, createdAt])
+  @@index([messageId])
+  @@index([status, expiresAt])
+}
+
+model MessengerMediaJob {
+  id             String                     @id @default(cuid())
+  status         MessengerMediaJobStatus    @default(pending)
+  attemptCount   Int                        @default(0)
+  availableAt    DateTime                   @default(now())
+  leaseOwner     String?
+  leaseExpiresAt DateTime?
+  lastErrorCode  String?
+  createdAt      DateTime                   @default(now())
+  updatedAt      DateTime                   @updatedAt
+  completedAt    DateTime?
+  workspaceId    String
+  attachmentId   String                     @unique
+  workspace      Workspace                  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  attachment     MessengerMessageAttachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade)
+
+  @@index([status, availableAt, leaseExpiresAt])
+  @@index([workspaceId, createdAt])
+}
+
+model MessengerAiInvocation {
+  id                       String                           @id @default(cuid())
+  status                   MessengerAiInvocationStatus      @default(queued)
+  contextThroughSequence   BigInt
+  contextMessageIds        Json
+  contextFingerprint       String
+  processingLeaseId        String?
+  processingStartedAt      DateTime?
+  attemptCount             Int                              @default(0)
+  providerRequestId        String?
+  providerDispatchState    MessengerAiProviderDispatchState @default(not_dispatched)
+  draftSuggestionCiphertext Bytes?
+  draftSuggestionNonce     Bytes?
+  draftSuggestionKeyVersion Int?
+  errorCode                String?
+  createdAt                DateTime                         @default(now())
+  updatedAt                DateTime                         @updatedAt
+  completedAt              DateTime?
+  workspaceId              String
+  conversationId           String
+  sourceMessageId          String                           @unique
+  requestedByUserId        String
+  responseMessageId        String?                          @unique
+  workspace                Workspace                        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversation             MessengerConversation            @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sourceMessage            MessengerMessage                 @relation("MessengerAiSourceMessage", fields: [sourceMessageId], references: [id], onDelete: Cascade)
+  requestedBy              User                             @relation("MessengerAiInvocationRequester", fields: [requestedByUserId], references: [id], onDelete: Restrict)
+  responseMessage          MessengerMessage?                @relation("MessengerAiResponseMessage", fields: [responseMessageId], references: [id], onDelete: SetNull)
+  attachments              MessengerAiInvocationAttachment[]
+  handoffs                 MessengerAiHandoff[]
+
+  @@index([status, createdAt])
+  @@index([workspaceId, requestedByUserId, status])
+  @@index([conversationId, createdAt])
+}
+
+model MessengerAiInvocationAttachment {
+  id                  String                                @id @default(cuid())
+  extractionStatus    MessengerAiAttachmentExtractionStatus @default(pending)
+  errorCode           String?
+  verifiedContentHash String?
+  characterCount      Int?
+  extractCiphertext   Bytes?
+  extractNonce        Bytes?
+  extractKeyVersion   Int?
+  processingLeaseId   String?
+  processingStartedAt DateTime?
+  attemptCount        Int                                   @default(0)
+  availableAt         DateTime                              @default(now())
+  consentedAt         DateTime                              @default(now())
+  expiresAt           DateTime
+  invocationId        String
+  attachmentId        String
+  consentedByUserId   String
+  invocation          MessengerAiInvocation                 @relation(fields: [invocationId], references: [id], onDelete: Cascade)
+  attachment          MessengerMessageAttachment            @relation(fields: [attachmentId], references: [id], onDelete: Restrict)
+
+  @@unique([invocationId, attachmentId])
+  @@index([attachmentId])
+  @@index([expiresAt])
+  @@index([extractionStatus, availableAt, processingStartedAt])
+}
+
+model MessengerAiHandoff {
+  id                     String                @id @default(cuid())
+  createdAt              DateTime              @default(now())
+  invocationId           String
+  requestedByUserId      String
+  targetAiConversationId String?               @unique
+  invocation             MessengerAiInvocation @relation(fields: [invocationId], references: [id], onDelete: Cascade)
+  requestedBy            User                  @relation("MessengerAiHandoffRequester", fields: [requestedByUserId], references: [id], onDelete: Restrict)
+  targetAiConversation   AiConversation?       @relation("MessengerAiHandoffTarget", fields: [targetAiConversationId], references: [id], onDelete: SetNull)
+
+  @@unique([invocationId, requestedByUserId])
+  @@index([requestedByUserId, createdAt])
+}
+
+model MessengerOutboxEvent {
+  id             String                 @id @default(cuid())
+  eventId        String                 @unique @default(cuid())
+  type           String
+  payload        Json
+  status         MessengerOutboxStatus  @default(pending)
+  attemptCount   Int                    @default(0)
+  availableAt    DateTime               @default(now())
+  publishedAt    DateTime?
+  createdAt      DateTime               @default(now())
+  lastErrorCode  String?
+  leaseOwner     String?
+  leaseExpiresAt DateTime?
+  workspaceId    String
+  conversationId String?
+  targetUserId   String?
+  workspace      Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversation   MessengerConversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+  @@index([conversationId, createdAt])
+  @@index([targetUserId, createdAt])
+  @@index([leaseExpiresAt])
+}
+
+model MessengerKeyEnvelope {
+  id             String                    @id @default(cuid())
+  version        Int
+  wrappedDataKey Bytes
+  wrapNonce      Bytes
+  kmsKeyId       String
+  algorithm      String
+  state          MessengerKeyEnvelopeState @default(active)
+  createdAt      DateTime                  @default(now())
+  activatedAt    DateTime
+  retiredAt      DateTime?
+  workspaceId    String
+  workspace      Workspace                 @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, version])
+  @@index([workspaceId, state])
+}
+
+model MessengerDeletionTombstone {
+  id              String                           @id @default(cuid())
+  resourceType    MessengerDeletionResourceType
+  resourceId      String
+  reason          String
+  status          MessengerDeletionTombstoneStatus @default(pending)
+  requestedAt     DateTime                         @default(now())
+  effectiveAt     DateTime
+  backupExpiresAt DateTime
+  completedAt     DateTime?
+  workspaceId     String
+  conversationId  String?
+  workspace       Workspace                        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([resourceType, resourceId])
+  @@index([status, effectiveAt])
+  @@index([workspaceId, status])
+  @@index([backupExpiresAt])
 }
 
 model Document {
@@ -352,6 +839,7 @@ model AiConversation {
   messages     AiMessage[]
   draftActions AiDraftAction[]
   agentTasks   AiAgentTask[]
+  messengerAiHandoffs MessengerAiHandoff[] @relation("MessengerAiHandoffTarget")
 
   @@index([workspaceId, ownerUserId, archivedAt, updatedAt])
   @@index([ownerUserId, updatedAt])
@@ -376,7 +864,7 @@ model AiMessage {
   inReplyTo           AiMessage?      @relation("AiMessageReply", fields: [inReplyToMessageId], references: [id], onDelete: Cascade)
   response            AiMessage?      @relation("AiMessageReply")
   draftActions        AiDraftAction[]
-  plannedAgentTasks   AiAgentTask[]     @relation("AiAgentPlanMessage")
+  plannedAgentTasks   AiAgentTask[]   @relation("AiAgentPlanMessage")
 
   @@unique([conversationId, clientRequestId])
   @@index([conversationId, createdAt, id])
@@ -410,35 +898,35 @@ model AiDraftAction {
 }
 
 model AiAgentTask {
-  id                 String            @id @default(cuid())
-  status             AiAgentTaskStatus @default(awaiting_confirmation)
-  prompt             String
-  plan               String
-  summary            String?
-  errorCode          String?
-  clientRequestId    String
-  activeDocumentId   String?
+  id                  String            @id @default(cuid())
+  status              AiAgentTaskStatus @default(awaiting_confirmation)
+  prompt              String
+  plan                String
+  summary             String?
+  errorCode           String?
+  clientRequestId     String
+  activeDocumentId    String?
   providerMessages    Json?
   observations        Json?
   processingLeaseId   String?
   processingStartedAt DateTime?
-  toolCallCount      Int               @default(0)
-  writeBytes         Int               @default(0)
-  runCount           Int               @default(0)
-  createdAt          DateTime          @default(now())
-  updatedAt          DateTime          @updatedAt
-  confirmedAt        DateTime?
-  completedAt        DateTime?
-  stoppedAt          DateTime?
-  workspaceId        String
-  ownerUserId        String
-  conversationId     String
-  planMessageId      String
-  workspace          Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  owner              User              @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
-  conversation       AiConversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  planMessage        AiMessage          @relation("AiAgentPlanMessage", fields: [planMessageId], references: [id], onDelete: Cascade)
-  steps              AiAgentStep[]
+  toolCallCount       Int               @default(0)
+  writeBytes          Int               @default(0)
+  runCount            Int               @default(0)
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+  confirmedAt         DateTime?
+  completedAt         DateTime?
+  stoppedAt           DateTime?
+  workspaceId         String
+  ownerUserId         String
+  conversationId      String
+  planMessageId       String
+  workspace           Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  owner               User              @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  conversation        AiConversation    @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  planMessage         AiMessage         @relation("AiAgentPlanMessage", fields: [planMessageId], references: [id], onDelete: Cascade)
+  steps               AiAgentStep[]
 
   @@unique([workspaceId, ownerUserId, clientRequestId])
   @@index([workspaceId, ownerUserId, status, updatedAt])
@@ -446,20 +934,20 @@ model AiAgentTask {
 }
 
 model AiAgentStep {
-  id          String            @id @default(cuid())
-  sequence    Int
-  action      AiAgentActionType
-  status      AiAgentStepStatus @default(running)
-  label       String
-  input       Json?
-  output      Json?
-  errorCode   String?
-  documentId  String?
-  runId       String?
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
-  taskId      String
-  task        AiAgentTask       @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  id         String            @id @default(cuid())
+  sequence   Int
+  action     AiAgentActionType
+  status     AiAgentStepStatus @default(running)
+  label      String
+  input      Json?
+  output     Json?
+  errorCode  String?
+  documentId String?
+  runId      String?
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+  taskId     String
+  task       AiAgentTask       @relation(fields: [taskId], references: [id], onDelete: Cascade)
 
   @@unique([taskId, sequence])
   @@index([taskId, createdAt])

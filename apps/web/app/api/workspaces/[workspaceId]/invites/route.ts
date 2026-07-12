@@ -13,7 +13,6 @@ export async function GET(request: NextRequest, context: { params: Promise<{ wor
   if (!user) {
     return NextResponse.json({ error: "Authentication required" }, { status: 401 });
   }
-
   const { workspaceId } = await context.params;
 
   try {
@@ -32,20 +31,23 @@ export async function POST(request: NextRequest, context: { params: Promise<{ wo
   if (!user) {
     return NextResponse.json({ error: "Authentication required" }, { status: 401 });
   }
+  if (!user.emailVerifiedAt) return NextResponse.json({ error: "Verify your email before inviting people" }, { status: 403 });
 
   const body = await request.json();
   const role = body.role;
+  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
 
   if (!roles.has(role)) {
     return NextResponse.json({ error: "Role must be viewer or editor" }, { status: 400 });
   }
+  if (!email) return NextResponse.json({ error: "Email is required" }, { status: 400 });
 
   const { workspaceId } = await context.params;
 
   try {
     const result = await inviteRepository.createInvite({
       createdByUserId: user.id,
-      email: typeof body.email === "string" ? body.email : null,
+      email,
       role,
       workspaceId
     });

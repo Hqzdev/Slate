@@ -7,9 +7,11 @@ import { BrandMark } from "@/components/BrandMark";
 type InvitePayload = {
   acceptedAt: string | null;
   createdByName: string;
+  declinedAt: string | null;
   email: string | null;
   expiresAt: string;
   role: "editor" | "owner" | "viewer";
+  revokedAt: string | null;
   workspace: {
     id: string;
     name: string;
@@ -87,6 +89,8 @@ export function InvitePage({ token }: { token: string }) {
               </div>
               {invite.acceptedAt ? (
                 <Link className="dark-button" href="/workspace">Open workspace</Link>
+              ) : invite.declinedAt || invite.revokedAt || new Date(invite.expiresAt) <= new Date() ? (
+                <Link className="light-button" href="/workspace">Open Slate</Link>
               ) : (
                 <button className="dark-button" disabled={accepting} onClick={acceptInvite}>
                   {accepting ? "Joining..." : "Accept invite"}

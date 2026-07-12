@@ -41,6 +41,8 @@ apps/
   web/                 Browser workspace
 services/
   sync/                Realtime synchronization service
+  messenger-realtime/  Messenger notification gateway and outbox publisher
+  messenger-media/     Isolated attachment validation and preview worker
   execution/           Sandboxed code execution service
 packages/
   shared/              Shared domain types
@@ -69,9 +71,13 @@ The local server stack is:
 
 - Postgres for users, sessions, workspaces, documents, snapshots, jobs, activity, and audit events.
 - Redis for rate limiting, realtime fanout, and the execution queue.
+- MinIO for local private Messenger object storage.
+- ClamAV for Messenger attachment malware scanning.
 - Next API routes in `apps/web`.
 - The sync service in `services/sync`.
 - The execution worker in `services/execution`.
+- The Messenger realtime gateway in `services/messenger-realtime`.
+- The Messenger media worker in `services/messenger-media`.
 
 ## Local Server Stack
 
@@ -81,9 +87,9 @@ From the repository root, start the complete local stack:
 npm run dev
 ```
 
-On macOS, this opens Docker Desktop when needed. It then starts Postgres and Redis, generates the Prisma clients, applies database migrations, and runs the web app, sync service, and execution worker. Press `Ctrl+C` to stop the application services. Postgres and Redis remain available for the next start.
+On macOS, this opens Docker Desktop when needed. It then starts Postgres, Redis, MinIO, and ClamAV, creates the private Messenger bucket, generates the Prisma clients, applies database migrations, builds and starts the isolated Messenger media worker, and runs the web app, sync service, Messenger realtime gateway, and execution worker. Press `Ctrl+C` to stop the application services. Container infrastructure remains available for the next start.
 
-Stop Postgres and Redis when they are no longer needed:
+Stop the local container infrastructure when it is no longer needed:
 
 ```bash
 npm run dev:down
@@ -94,6 +100,8 @@ Install each workspace's dependencies before the first start:
 ```bash
 npm --prefix apps/web install
 npm --prefix services/sync install
+npm --prefix services/messenger-realtime install
+npm --prefix services/messenger-media install
 npm --prefix services/execution install
 ```
 
@@ -111,6 +119,48 @@ Health checks:
 - Web API: [http://127.0.0.1:3000/api/health](http://127.0.0.1:3000/api/health)
 - Sync service: [http://127.0.0.1:1234/health](http://127.0.0.1:1234/health)
 - Execution worker: [http://127.0.0.1:1235/health](http://127.0.0.1:1235/health)
+- Messenger realtime: [http://127.0.0.1:1236/health/live](http://127.0.0.1:1236/health/live)
+- Messenger media: internal container health check on port `1237`.
+- MinIO API: [http://127.0.0.1:9000/minio/health/live](http://127.0.0.1:9000/minio/health/live)
+- MinIO console: [http://127.0.0.1:9001](http://127.0.0.1:9001)
+
+## Messenger Foundation
+
+Messenger phase 1 provides the encrypted server data layer and APIs; the Messenger page itself starts in phase 2. Production must set `MESSENGER_KEY_ID`, `MESSENGER_KEY_ENCRYPTION_KEY`, and `MESSENGER_FINGERPRINT_KEY`. Both key values are independent 32-byte base64 secrets. During wrapping-key rotation, `MESSENGER_KEY_ENCRYPTION_KEYS` holds a JSON object of every retained key ID to base64 key while `MESSENGER_KEY_ID` selects the active writer key. Local development has an explicit non-production fallback.
+
+Messenger retention runs as a separate idempotent cleanup worker: `npm --prefix apps/web run messenger:retention:cleanup`. It creates deletion tombstones before removing object variants and ciphertext. Rotate an approved workspace key with `MESSENGER_ROTATE_WORKSPACE_ID=<workspace-id> npm --prefix apps/web run messenger:key:rotate`. Production must also set `TRUSTED_PROXY_CLIENT_IP_HEADER` to the header supplied only by its trusted edge proxy.
+
+After deploying migration `0015_messenger_foundation`, reconcile existing workspaces before enabling Messenger:
+
+```bash
+npm --prefix apps/web run messenger:backfill
+```
+
+The command is idempotent and reports only aggregate counts and its workspace cursor. A database whose name contains `test` can run the destructive foundation smoke test:
+
+```bash
+npm --prefix apps/web run messenger:smoke
+```
+
+The smoke test verifies encrypted persistence, idempotent send, stable sequence allocation, viewer denial, unread/receipt behavior, and reactions, then removes its own fixture.
+
+Keep `MESSENGER_ENABLED=false` during migration and reconciliation. Set it to `true` only after backfill finishes with zero invariant violations; all Messenger REST routes otherwise fail closed.
+
+Messenger realtime is independently gated by `MESSENGER_REALTIME_ENABLED`. Production must provide `MESSENGER_REALTIME_PUBLIC_URL`, `MESSENGER_REALTIME_GRANT_ACTIVE_KID`, `MESSENGER_REALTIME_GRANT_KEYS`, and `MESSENGER_REALTIME_ALLOWED_ORIGINS`. Grants expire after two minutes, are never persisted by the browser, and websocket events contain only identifiers and recovery cursors. Keep the realtime flag disabled until migration `0016_messenger_realtime_outbox_leases` is deployed and the gateway health check is ready.
+
+Messenger attachment upload is independently gated by `MESSENGER_ATTACHMENTS_ENABLED`. Migration `0017_messenger_attachments_foundation` adds encrypted attachment metadata, durable media jobs, atomic message claims, cleanup state, and the missing realtime dead-letter status. Local development uses the private `slate-messenger` MinIO bucket. Production must provide a private S3-compatible endpoint, bucket, credentials, TLS, server-side encryption, quotas, and lifecycle monitoring before enabling the flag.
+
+Messenger AI is independently default-off through `MESSENGER_AI_ENABLED=false` and can be stopped immediately with `MESSENGER_AI_KILL_SWITCH=true`. Migration `0020_messenger_ai_extraction_leases` adds crash-recoverable leases for consented attachment extraction in the isolated media service. The Messenger AI worker runs separately from the web process. Realtime and media expose `/health/ready` and `/metrics`; staging security and 2x-forecast load gates are available through `npm run messenger:security:staging` and `npm run messenger:load`.
+
+Verify the direct-upload lifecycle against local Postgres and MinIO:
+
+```bash
+npm --prefix apps/web run messenger:storage:smoke
+npm --prefix apps/web run messenger:media:smoke
+npm --prefix apps/web run messenger:attachments:cleanup
+```
+
+The storage smoke reserves an encrypted attachment, performs the signed exact-size POST, rejects an invalid-size upload, confirms storage metadata, creates the durable media job, abandons the object, and removes its fixture. The media smoke verifies clean PNG processing, its generated WebP thumbnail, and a real MinIO Range read, then requires the EICAR test pattern to finish as `malware_detected`; it removes every object and database fixture. The browser UI exposes uploads only when both Messenger rollout flags are enabled.
 
 ## AI Assistant
 

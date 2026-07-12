@@ -2,7 +2,7 @@ import { workspaceAccessPolicy, type WorkspaceAccessPolicy } from "../workspaceA
 import { aiActionExecutor, type AiActionExecutor } from "./actionExecutor";
 import { aiConversationRepository, type AiConversationRepository } from "./conversationRepository";
 import { AiDomainError, toAiDomainError } from "./errors";
-import { GigaChatClient, loadGigaChatConfig } from "./gigaChatClient";
+import { getGigaChatClient } from "./gigaChatClientProvider";
 import { AiOrchestrator } from "./orchestrator";
 import type { AiMessageInput } from "./input";
 import { aiUsageLimiter, type AiUsageLimiter } from "./usageLimiter";
@@ -16,8 +16,6 @@ type AiAssistantServiceOptions = {
   createOrchestrator?: () => AiOrchestrator;
   usageLimiter?: AiUsageLimiter;
 };
-
-let gigaChatClient: GigaChatClient | null = null;
 
 export class AiAssistantService {
   private readonly actionExecutor: AiActionExecutor;
@@ -143,11 +141,6 @@ export class AiAssistantService {
   discardAction(ownerUserId: string, workspaceId: string, actionId: string) {
     return this.actionExecutor.discard(ownerUserId, workspaceId, actionId);
   }
-}
-
-export function getGigaChatClient() {
-  if (!gigaChatClient) gigaChatClient = new GigaChatClient(loadGigaChatConfig());
-  return gigaChatClient;
 }
 
 function failureMessage(error: AiDomainError) {

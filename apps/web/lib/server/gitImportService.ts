@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { type ImportedWorkspaceDocument } from "@/lib/server/workspaceRepository";
+import { type ImportedWorkspaceDocument } from "./workspaceRepository";
 
 const execFileAsync = promisify(execFile);
 const cloneTimeoutMs = 15000;
@@ -63,9 +63,50 @@ const languageByExtension = new Map<string, string>([
   [".yml", "yaml"]
 ]);
 
+export function normalizeGitHubRepositoryUrl(value: string) {
+  const trimmedValue = value.trim();
+
+  if (trimmedValue.length === 0) {
+    throw new Error("Git URL is required");
+  }
+
+  if (trimmedValue.length > maxGitUrlLength) {
+    throw new Error("Git URL is too long");
+  }
+
+  let url: URL;
+  try {
+    url = new URL(trimmedValue);
+  } catch {
+    throw new Error("Git URL must be a valid HTTPS GitHub URL");
+  }
+
+  if (url.protocol !== "https:" || url.hostname !== "github.com" || url.username || url.password || url.search || url.hash) {
+    throw new Error("Only public HTTPS GitHub repository URLs are supported");
+  }
+
+  const segments = url.pathname.split("/").filter(Boolean);
+  if (segments.length !== 2) {
+    throw new Error("GitHub URL must include owner and repository");
+  }
+
+  const owner = cleanGitHubSegment(segments[0]);
+  const repository = cleanGitHubSegment(segments[1].replace(/\.git$/, ""));
+
+  return `https://github.com/${owner}/${repository}.git`;
+}
+
+function cleanGitHubSegment(segment: string) {
+  if (!/^[A-Za-z0-9_.-]+$/.test(segment)) {
+    throw new Error("GitHub URL contains invalid owner or repository name");
+  }
+
+  return segment;
+}
+
 export class GitImportService {
   async importRepository(url: string): Promise<{ documents: ImportedWorkspaceDocument[]; summary: { importedFiles: number; scannedFiles: number; skippedFiles: number } }> {
-    const repositoryUrl = this.normalizeUrl(url);
+    const repositoryUrl = normalizeGitHubRepositoryUrl(url);
     const checkoutPath = await mkdtemp(path.join(tmpdir(), "slate-git-import-"));
 
     try {
@@ -92,47 +133,6 @@ export class GitImportService {
     } finally {
       await rm(checkoutPath, { force: true, recursive: true });
     }
-  }
-
-  private normalizeUrl(value: string) {
-    const trimmedValue = value.trim();
-
-    if (trimmedValue.length === 0) {
-      throw new Error("Git URL is required");
-    }
-
-    if (trimmedValue.length > maxGitUrlLength) {
-      throw new Error("Git URL is too long");
-    }
-
-    let url: URL;
-    try {
-      url = new URL(trimmedValue);
-    } catch {
-      throw new Error("Git URL must be a valid HTTPS GitHub URL");
-    }
-
-    if (url.protocol !== "https:" || url.hostname !== "github.com" || url.username || url.password || url.search || url.hash) {
-      throw new Error("Only public HTTPS GitHub repository URLs are supported");
-    }
-
-    const segments = url.pathname.split("/").filter(Boolean);
-    if (segments.length !== 2) {
-      throw new Error("GitHub URL must include owner and repository");
-    }
-
-    const owner = this.cleanGitHubSegment(segments[0]);
-    const repository = this.cleanGitHubSegment(segments[1].replace(/\.git$/, ""));
-
-    return `https://github.com/${owner}/${repository}.git`;
-  }
-
-  private cleanGitHubSegment(segment: string) {
-    if (!/^[A-Za-z0-9_.-]+$/.test(segment)) {
-      throw new Error("GitHub URL contains invalid owner or repository name");
-    }
-
-    return segment;
   }
 
   private async collectFiles(rootPath: string) {

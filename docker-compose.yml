@@ -14,6 +14,9 @@ services:
       - "5432:5432"
     volumes:
       - slate-postgres:/var/lib/postgresql/data
+    networks:
+      - default
+      - slate-internal
 
   redis:
     image: redis:7-alpine
@@ -27,7 +30,137 @@ services:
       - "6379:6379"
     volumes:
       - slate-redis:/data
+    networks:
+      - default
+      - slate-internal
+
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_API_CORS_ALLOW_ORIGIN: http://localhost:3000,http://127.0.0.1:3000
+      MINIO_ROOT_PASSWORD: slate-minio-development
+      MINIO_ROOT_USER: slate-minio
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - slate-minio:/data
+    networks:
+      - default
+      - slate-internal
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c", "mc alias set slate http://minio:9000 slate-minio slate-minio-development && mc mb --ignore-existing slate/slate-messenger && mc anonymous set none slate/slate-messenger"]
+    networks:
+      - slate-internal
+
+  clamav:
+    image: clamav/clamav:1.5.3-debian13-slim
+    volumes:
+      - slate-clamav:/var/lib/clamav
+      - ./services/messenger-media/clamd.conf:/etc/clamav/clamd.conf:ro
+    healthcheck:
+      test: ["CMD", "clamdscan", "--ping", "1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+    mem_limit: 4g
+    networks:
+      - default
+      - slate-internal
+
+  messenger-media:
+    build:
+      context: ./services/messenger-media
+    depends_on:
+      clamav:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: 3310
+      DATABASE_URL: postgresql://slate:slate@postgres:5432/slate?schema=public
+      HOST: 0.0.0.0
+      MESSENGER_STORAGE_ACCESS_KEY_ID: slate-minio
+      MESSENGER_STORAGE_BUCKET: slate-messenger
+      MESSENGER_STORAGE_ENDPOINT: http://minio:9000
+      MESSENGER_STORAGE_FORCE_PATH_STYLE: "true"
+      MESSENGER_STORAGE_REGION: us-east-1
+      MESSENGER_STORAGE_SECRET_ACCESS_KEY: slate-minio-development
+      PORT: 1237
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:1237/health/ready').then((response) => { if (!response.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1770,uid=1000,gid=1000
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 1.5
+    networks:
+      - slate-internal
+
+  messenger-realtime:
+    build:
+      context: ./services/messenger-realtime
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://slate:slate@postgres:5432/slate?schema=public
+      HOST: 0.0.0.0
+      MESSENGER_REALTIME_ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      MESSENGER_REALTIME_GRANT_ACTIVE_KID: local-development-v1
+      MESSENGER_REALTIME_GRANT_KEYS: '{"local-development-v1":"c2xhdGUtbWVzc2VuZ2VyLXJlYWx0aW1lLWxvY2FsLWtleS12MQ=="}'
+      PORT: 1236
+      REDIS_URL: redis://redis:6379
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:1236/health/ready').then((response) => { if (!response.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "1236:1236"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1
+    networks:
+      - default
+      - slate-internal
 
 volumes:
+  slate-clamav:
+  slate-minio:
   slate-postgres:
   slate-redis:
+
+networks:
+  slate-internal:
+    internal: true

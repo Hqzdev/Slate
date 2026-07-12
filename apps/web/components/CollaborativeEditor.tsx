@@ -14,7 +14,6 @@ type CollaborativeEditorProps = {
   fileName: string;
   initialValue: string;
   language: string;
-  onCommentSelectionChange: (selection: EditorCommentSelection | null) => void;
   onContentChange: (content: string) => void;
   onPresenceChange: (users: PresenceUser[]) => void;
   onRealtimeStatusChange: (status: RealtimeConnectionStatus) => void;
@@ -29,11 +28,6 @@ type CollaborativeEditorProps = {
     name: string;
     role: string;
   };
-};
-
-export type EditorCommentSelection = {
-  endLine: number;
-  startLine: number;
 };
 
 export type PresenceUser = {
@@ -54,10 +48,9 @@ type AwarenessState = {
 
 const syncUrl = process.env.NEXT_PUBLIC_SYNC_URL ?? "ws://127.0.0.1:1234";
 
-export function CollaborativeEditor({ documentId, fileName, initialValue, language, onCommentSelectionChange, onContentChange, onPresenceChange, onRealtimeStatusChange, readOnly, registerDocumentFlush, roomName, theme, user }: CollaborativeEditorProps) {
+export function CollaborativeEditor({ documentId, fileName, initialValue, language, onContentChange, onPresenceChange, onRealtimeStatusChange, readOnly, registerDocumentFlush, roomName, theme, user }: CollaborativeEditorProps) {
   const roomKey = useMemo(() => `slate:room:${roomName}:file:${documentId}`, [documentId, roomName]);
   const [cursors, setCursors] = useState<LiveCursor[]>([]);
-  const commentSelectionChangeRef = useRef(onCommentSelectionChange);
   const contentChangeRef = useRef(onContentChange);
   const latestContentRef = useRef(initialValue);
   const pendingSaveRef = useRef(false);
@@ -70,10 +63,6 @@ export function CollaborativeEditor({ documentId, fileName, initialValue, langua
   useEffect(() => {
     contentChangeRef.current = onContentChange;
   }, [onContentChange]);
-
-  useEffect(() => {
-    commentSelectionChangeRef.current = onCommentSelectionChange;
-  }, [onCommentSelectionChange]);
 
   useEffect(() => {
     realtimeStatusChangeRef.current = onRealtimeStatusChange;
@@ -120,7 +109,7 @@ export function CollaborativeEditor({ documentId, fileName, initialValue, langua
         "editorLineNumber.foreground": "#44403c",
         "editorLineNumber.activeForeground": "#a8a29e",
         "editorCursor.foreground": "#fafaf9",
-        "editor.selectionBackground": "#3ba6f155"
+        "editor.selectionBackground": "#57534e99"
       }
     });
     monaco.editor.defineTheme("slate-light", {
@@ -133,7 +122,7 @@ export function CollaborativeEditor({ documentId, fileName, initialValue, langua
         "editorLineNumber.foreground": "#a8a29e",
         "editorLineNumber.activeForeground": "#57534e",
         "editorCursor.foreground": "#0c0a09",
-        "editor.selectionBackground": "#c1e1f7"
+        "editor.selectionBackground": "#d6d3d1"
       }
     });
     monaco.editor.setTheme(`slate-${theme}`);
@@ -181,18 +170,6 @@ export function CollaborativeEditor({ documentId, fileName, initialValue, langua
       flushContentSave();
     };
 
-    const selectionSubscription = editor.onDidChangeCursorSelection(({ selection }) => {
-      if (model.getValueInRange(selection).length === 0) {
-        commentSelectionChangeRef.current(null);
-        return;
-      }
-
-      commentSelectionChangeRef.current({
-        endLine: Math.max(selection.startLineNumber, selection.endLineNumber),
-        startLine: Math.min(selection.startLineNumber, selection.endLineNumber)
-      });
-    });
-
     doc.on("update", handleDocUpdate);
     window.addEventListener("pagehide", handlePageHide);
 
@@ -217,8 +194,6 @@ export function CollaborativeEditor({ documentId, fileName, initialValue, langua
       disposed = true;
       flushContentSave();
       window.removeEventListener("pagehide", handlePageHide);
-      selectionSubscription.dispose();
-      commentSelectionChangeRef.current(null);
       doc.off("update", handleDocUpdate);
       provider?.awareness.off("change", updatePresence);
       unwatchRealtimeConnection?.();

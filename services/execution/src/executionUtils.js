@@ -9,7 +9,7 @@ export function formatRunOutput({ command, duration, environmentId, outputLimit,
     command,
     `environment=${environmentId}`,
     `duration=${duration}`,
-    `exitCode=${result.timedOut ? "timeout" : result.code}`,
+    `exitCode=${result.cancelled ? "cancelled" : result.timedOut ? "timeout" : result.code}`,
     result.outputTruncated ? `output=truncated:${outputLimit}` : null,
     result.stdout.trim(),
     result.stderr.trim()
@@ -17,6 +17,7 @@ export function formatRunOutput({ command, duration, environmentId, outputLimit,
 }
 
 export function classifyProcessFailure(result, fallback) {
+  if (result.cancelled) return "Run cancelled";
   if (result.timedOut) return "Run timed out";
   const stderr = result.stderr.toLowerCase();
   if (stderr.includes("enoent") || stderr.includes("command not found")) return "Execution runtime unavailable";

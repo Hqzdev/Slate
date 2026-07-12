@@ -1,0 +1,2 @@
+ALTER TABLE "EmailVerificationToken" ADD COLUMN "resendCount" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "EmailVerificationToken" ADD COLUMN "resendWindowStartedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;

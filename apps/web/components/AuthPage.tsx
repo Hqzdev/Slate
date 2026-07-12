@@ -45,6 +45,7 @@ export function AuthPage(props: AuthPageProps) {
   const isRegister = props.mode === "register";
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [registrationPassword, setRegistrationPassword] = useState("");
   const invite = useSyncExternalStore(subscribeUrlChange, getInviteSnapshot, getServerInviteSnapshot);
   const next = useSyncExternalStore(subscribeUrlChange, getNextSnapshot, getServerNextSnapshot);
   const footerParams = new URLSearchParams();
@@ -63,14 +64,22 @@ export function AuthPage(props: AuthPageProps) {
       body: JSON.stringify({
         email: formData.get("email"),
         name: formData.get("name"),
-        password: formData.get("password")
+        password: formData.get("password"),
+        username: formData.get("username"),
+        identifier: formData.get("identifier")
       }),
       headers: { "content-type": "application/json" },
       method: "POST"
     });
 
     if (response.ok) {
-      window.location.href = invite ? `/invite/${encodeURIComponent(invite)}` : next ?? "/workspace";
+      const body = await response.json() as { developmentCode?: string | null };
+      if (isRegister) {
+        if (body.developmentCode) window.sessionStorage.setItem("slate-development-verification-code", body.developmentCode);
+        window.location.href = `/verify-email?email=${encodeURIComponent(String(formData.get("email") ?? ""))}`;
+        return;
+      }
+      window.location.href = "/onboarding";
       return;
     }
 
@@ -102,17 +111,30 @@ export function AuthPage(props: AuthPageProps) {
                   <input required name="name" type="text" placeholder="Ada Kim" />
                 </label>
               )}
-              <label>
+              {isRegister && (
+                <label>
+                  <span>Username</span>
+                  <input autoCapitalize="none" autoComplete="username" maxLength={32} minLength={3} pattern="[A-Za-z0-9_-]+" required name="username" type="text" placeholder="ada-kim" />
+                </label>
+              )}
+              {!isRegister && (
+                <label>
+                  <span>Email or username</span>
+                  <input autoCapitalize="none" autoComplete="username" required name="identifier" type="text" placeholder="you@company.com or ada-kim" />
+                </label>
+              )}
+              {isRegister && <label>
                 <span>Email</span>
                 <input required name="email" type="email" placeholder="you@company.com" />
-              </label>
+              </label>}
               <label>
                 <span className="label-row">
                   Password
                   {!isRegister && <a href="#forgot">Forgot password?</a>}
                 </span>
-                <input required minLength={isRegister ? 8 : undefined} name="password" type="password" placeholder={isRegister ? "8+ characters" : "Password"} />
+                <input onChange={(event) => setRegistrationPassword(event.target.value)} required minLength={isRegister ? 12 : undefined} name="password" type="password" placeholder={isRegister ? "12+ characters" : "Password"} />
               </label>
+              {isRegister && <PasswordStrengthIndicator password={registrationPassword} />}
               {isRegister && (
                 <label className="terms-row">
                   <input required type="checkbox" />
@@ -169,6 +191,11 @@ export function AuthPage(props: AuthPageProps) {
       </section>
     </main>
   );
+}
+
+function PasswordStrengthIndicator({ password }: { password: string }) {
+  const score = [password.length >= 12, /[a-z]/.test(password), /[A-Z]/.test(password), /\d/.test(password), /[^A-Za-z0-9]/.test(password)].filter(Boolean).length;
+  return <div className={`password-strength password-strength-${score}`} aria-live="polite"><div>{[0, 1, 2, 3].map((segment) => <span className={segment < Math.min(score, 4) ? "active" : ""} key={segment} />)}</div><small>{score === 5 ? "Strong password" : "Use 12+ characters with uppercase, lowercase, number, and symbol."}</small></div>;
 }
 
 async function readAuthError(response: Response) {

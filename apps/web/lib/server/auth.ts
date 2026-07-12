@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
+import { clientIpAddressResolver } from "@/lib/server/clientIpAddress";
 import { prisma } from "@/lib/server/prisma";
 
 const sessionCookieName = "slate_session";
@@ -10,9 +11,12 @@ const maxSessionsPerUser = 8;
 export type AuthUser = {
   color: string;
   email: string;
+  emailVerifiedAt: Date | null;
   id: string;
   initials: string;
   name: string;
+  onboardingCompletedAt: Date | null;
+  username: string | null;
 };
 
 export type SessionDevice = {
@@ -211,9 +215,12 @@ export class AuthService {
     return {
       color: session.user.color,
       email: session.user.email,
+      emailVerifiedAt: session.user.emailVerifiedAt,
       id: session.user.id,
       initials: session.user.initials,
-      name: session.user.name
+      name: session.user.name,
+      onboardingCompletedAt: session.user.onboardingCompletedAt,
+      username: session.user.username
     };
   }
 
@@ -222,8 +229,7 @@ export class AuthService {
   }
 
   private getRequestIpAddress(request?: NextRequest) {
-    const forwarded = request?.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-    return forwarded || request?.headers.get("x-real-ip") || null;
+    return clientIpAddressResolver.resolve(request);
   }
 
   private getDeviceName(userAgent: string | null) {

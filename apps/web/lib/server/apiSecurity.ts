@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { rateLimitService } from "@/lib/server/rateLimit";
+import { rateLimitService } from "./rateLimit";
 
 type MutationGuardOptions = {
   limit?: number;
@@ -12,9 +12,8 @@ const mutatingMethods = new Set(["DELETE", "PATCH", "POST", "PUT"]);
 export async function guardMutationRequest(request: NextRequest, options: MutationGuardOptions) {
   if (!mutatingMethods.has(request.method)) return null;
 
-  if (!isSameOriginRequest(request)) {
-    return NextResponse.json({ error: "Request origin denied" }, { status: 403 });
-  }
+  const originDenied = guardRequestOrigin(request);
+  if (originDenied) return originDenied;
 
   const allowed = await rateLimitService.check(request, {
     limit: options.limit ?? 60,
@@ -27,6 +26,11 @@ export async function guardMutationRequest(request: NextRequest, options: Mutati
   }
 
   return null;
+}
+
+export function guardRequestOrigin(request: NextRequest) {
+  if (isSameOriginRequest(request)) return null;
+  return NextResponse.json({ error: "Request origin denied" }, { status: 403 });
 }
 
 function isSameOriginRequest(request: NextRequest) {

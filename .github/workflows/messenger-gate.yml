@@ -1,0 +1,54 @@
+name: Messenger Gate
+
+on:
+  pull_request:
+    paths:
+      - "apps/web/**"
+      - "services/messenger-media/**"
+      - "services/messenger-realtime/**"
+      - "services/execution/**"
+      - "docs/messenger/**"
+      - "docker-compose.yml"
+      - ".github/workflows/messenger-gate.yml"
+  push:
+    branches:
+      - main
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          cache: npm
+          cache-dependency-path: |
+            apps/web/package-lock.json
+            services/execution/package-lock.json
+            services/messenger-media/package-lock.json
+            services/messenger-realtime/package-lock.json
+          node-version: 22.22.0
+      - run: npm ci
+        working-directory: apps/web
+      - run: npm ci
+        working-directory: services/execution
+      - run: npm ci
+        working-directory: services/messenger-media
+      - run: npm ci
+        working-directory: services/messenger-realtime
+      - run: npx prisma generate
+        working-directory: apps/web
+      - run: npm run lint
+        working-directory: apps/web
+      - run: npm test
+        working-directory: apps/web
+      - run: npm test
+        working-directory: services/execution
+      - run: npm test
+        working-directory: services/messenger-media
+      - run: npm test
+        working-directory: services/messenger-realtime
+      - run: npm run build
+        working-directory: apps/web
+      - run: docker compose config --quiet

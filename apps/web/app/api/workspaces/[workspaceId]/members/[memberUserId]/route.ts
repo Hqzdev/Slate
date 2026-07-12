@@ -6,7 +6,7 @@ import { workspaceRepository } from "@/lib/server/workspaceRepository";
 
 export const runtime = "nodejs";
 
-const roles = new Set<WorkspaceRole>(["owner", "editor", "viewer"]);
+const roles = new Set<WorkspaceRole>(["editor", "viewer"]);
 
 export async function PATCH(request: NextRequest, context: { params: Promise<{ memberUserId: string; workspaceId: string }> }) {
   const denied = await guardMutationRequest(request, { scope: "members:update" });
@@ -21,7 +21,7 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ m
   const role = body.role;
 
   if (!roles.has(role)) {
-    return NextResponse.json({ error: "Role must be owner, editor, or viewer" }, { status: 400 });
+    return NextResponse.json({ error: "Role must be editor or viewer" }, { status: 400 });
   }
 
   const { memberUserId, workspaceId } = await context.params;

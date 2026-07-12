@@ -29,9 +29,14 @@ redisHealthClient.on("error", () => {});
 
 async function markRun(runId, status, output, error = null) {
   await pool.query(
-    'update "JobRun" set status = $1::"JobStatus", output = $2, error = $3, "updatedAt" = now() where id = $4',
+    'update "JobRun" set status = $1::"JobStatus", output = $2, error = $3, "updatedAt" = now() where id = $4 and status <> \'cancelled\'::"JobStatus"',
     [status, output, error, runId]
   );
+}
+
+async function runCancelled(runId) {
+  const result = await pool.query('select status from "JobRun" where id = $1', [runId]);
+  return result.rows[0]?.status === "cancelled";
 }
 
 async function recordRunActivity(runId, status, error = null) {
@@ -76,6 +81,7 @@ function runProcess(command, args, timeoutMs, options = {}) {
     });
     let stdout = "";
     let stderr = "";
+    let cancelled = false;
     let outputTruncated = false;
     let timedOut = false;
     const timer = setTimeout(() => {
@@ -83,30 +89,47 @@ function runProcess(command, args, timeoutMs, options = {}) {
       void options.onTimeout?.();
       child.kill("SIGKILL");
     }, timeoutMs);
+    const cancellationTimer = options.shouldCancel ? setInterval(() => {
+      void options.shouldCancel().then((shouldCancel) => {
+        if (!shouldCancel || cancelled || timedOut) return;
+        cancelled = true;
+        void options.onCancelled?.();
+        child.kill("SIGKILL");
+      }).catch(() => undefined);
+    }, 250) : null;
+    const publishProgress = () => options.onOutput?.({ cancelled, code: null, outputTruncated, stderr, stdout, timedOut });
+
+    const complete = (code) => {
+      clearTimeout(timer);
+      if (cancellationTimer !== null) clearInterval(cancellationTimer);
+      resolve({ cancelled, code: code ?? 1, outputTruncated, stderr, stdout, timedOut });
+    };
 
     child.stdout.on("data", (chunk) => {
       const nextOutput = stdout + chunk.toString();
       stdout = nextOutput.slice(0, runOutputLimit);
       outputTruncated = outputTruncated || nextOutput.length > runOutputLimit;
+      publishProgress();
     });
     child.stderr.on("data", (chunk) => {
       const nextOutput = stderr + chunk.toString();
       stderr = nextOutput.slice(0, runOutputLimit);
       outputTruncated = outputTruncated || nextOutput.length > runOutputLimit;
+      publishProgress();
     });
     child.on("error", (error) => {
-      clearTimeout(timer);
-      resolve({ code: 1, outputTruncated, stderr: error.message, stdout, timedOut });
+      stderr = error.message;
+      complete(1);
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({ code: code ?? 1, outputTruncated, stderr, stdout, timedOut });
+      complete(code);
     });
   });
 }
 
 async function runNodeSyntaxCheck(jobData) {
   const startedAt = Date.now();
+  const runId = typeof jobData.runId === "string" ? jobData.runId : null;
   const source = typeof jobData.source === "string" ? jobData.source : "";
   const fileName = typeof jobData.fileName === "string" && jobData.fileName.trim() ? jobData.fileName.trim() : "document.js";
   const workDir = join(tmpdir(), "slate-runs");
@@ -115,19 +138,27 @@ async function runNodeSyntaxCheck(jobData) {
   await writeFile(filePath, source, "utf8");
 
   try {
-    const result = await runProcess(process.execPath, ["--check", filePath], runTimeoutMs);
-    const lines = [
+    let outputWrites = Promise.resolve();
+    const formatOutput = (result) => [
       `$ node --check ${fileName}`,
       `environment=node-syntax-check`,
       `duration=${formatDuration(startedAt)}`,
-      `exitCode=${result.timedOut ? "timeout" : result.code}`,
+      `exitCode=${result.cancelled ? "cancelled" : result.timedOut ? "timeout" : result.code}`,
       result.stdout.trim(),
       result.stderr.trim()
-    ].filter(Boolean);
+    ].filter(Boolean).join("\n");
+    const result = await runProcess(process.execPath, ["--check", filePath], runTimeoutMs, {
+      onOutput: (current) => {
+        if (!runId) return;
+        outputWrites = outputWrites.then(() => markRun(runId, "running", formatOutput(current))).catch(() => undefined);
+      },
+      shouldCancel: () => runId ? runCancelled(runId) : Promise.resolve(false)
+    });
+    await outputWrites;
     return {
       error: classifyProcessFailure(result, "Syntax check failed"),
-      output: lines.join("\n"),
-      status: result.timedOut || result.code !== 0 ? "failed" : "completed"
+      output: formatOutput(result),
+      status: result.cancelled ? "cancelled" : result.timedOut || result.code !== 0 ? "failed" : "completed"
     };
   } finally {
     await unlink(filePath).catch(() => undefined);
@@ -146,6 +177,14 @@ async function runNodeContainer(jobData) {
   await writeFile(filePath, source, "utf8");
 
   try {
+    let outputWrites = Promise.resolve();
+    const formatOutput = (result) => formatRunOutput({
+      command: `$ docker run ${nodeContainerImage} node ${fileName}`,
+      duration: formatDuration(startedAt),
+      environmentId: "node-container",
+      outputLimit: runOutputLimit,
+      result
+    });
     const args = [
       "run",
       "--rm",
@@ -177,21 +216,23 @@ async function runNodeContainer(jobData) {
       `/workspace/${fileName}`
     ];
     const result = await runProcess("docker", args, runTimeoutMs, {
+      onCancelled: async () => {
+        await runProcess("docker", ["kill", containerName], 2000);
+      },
+      onOutput: (current) => {
+        outputWrites = outputWrites.then(() => markRun(runId, "running", formatOutput(current))).catch(() => undefined);
+      },
       onTimeout: async () => {
         await runProcess("docker", ["kill", containerName], 2000);
-      }
+      },
+      shouldCancel: () => runCancelled(runId)
     });
-    const output = formatRunOutput({
-      command: `$ docker run ${nodeContainerImage} node ${fileName}`,
-      duration: formatDuration(startedAt),
-      environmentId: "node-container",
-      outputLimit: runOutputLimit,
-      result
-    });
+    await outputWrites;
+    const output = formatOutput(result);
     return {
       error: classifyProcessFailure(result, "Container run failed"),
       output,
-      status: result.timedOut || result.code !== 0 ? "failed" : "completed"
+      status: result.cancelled ? "cancelled" : result.timedOut || result.code !== 0 ? "failed" : "completed"
     };
   } finally {
     await rm(workDir, { force: true, recursive: true }).catch(() => undefined);
@@ -212,7 +253,7 @@ async function runDryRun(jobData) {
       `lines=${lineCount}`,
       "Run request reached the execution worker. No user code was executed."
     ].join("\n"),
-    status: "completed"
+    status: await runCancelled(jobData.runId) ? "cancelled" : "completed"
   };
 }
 
@@ -238,8 +279,10 @@ const worker = new Worker(
   "slate-runs",
   async (job) => {
     const runId = job.data.runId;
+    if (await runCancelled(runId)) return;
     await markRun(runId, "running", "Executor received the job.");
     const result = await executeRun(job.data);
+    if (result.status === "cancelled" || await runCancelled(runId)) return;
     await markRun(runId, result.status, result.output, result.error);
     if (result.status === "completed" || result.status === "failed") {
       await recordRunActivity(runId, result.status, result.error);

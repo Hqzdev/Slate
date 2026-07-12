@@ -33,6 +33,37 @@ test("formatRunOutput includes timeout and truncation metadata", () => {
   assert.match(output, /error/);
 });
 
+test("formatRunOutput identifies cancelled runs", () => {
+  const output = formatRunOutput({
+    command: "$ node main.js",
+    duration: "1s",
+    environmentId: "node-container",
+    outputLimit: 100,
+    result: {
+      cancelled: true,
+      code: null,
+      outputTruncated: false,
+      stderr: "",
+      stdout: "",
+      timedOut: false
+    }
+  });
+
+  assert.match(output, /exitCode=cancelled/);
+});
+
+test("classifyProcessFailure identifies cancellation", () => {
+  assert.equal(
+    classifyProcessFailure({
+      cancelled: true,
+      code: null,
+      stderr: "",
+      timedOut: false
+    }, "Container run failed"),
+    "Run cancelled"
+  );
+});
+
 test("classifyProcessFailure detects docker daemon failures", () => {
   assert.equal(
     classifyProcessFailure({

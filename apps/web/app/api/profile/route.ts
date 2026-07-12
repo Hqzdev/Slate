@@ -3,6 +3,7 @@ import { guardMutationRequest } from "@/lib/server/apiSecurity";
 import { authService } from "@/lib/server/auth";
 import { auditLogService } from "@/lib/server/auditLog";
 import { passwordService } from "@/lib/server/password";
+import { isValidUsername, normalizeEmail, normalizeUsername } from "@/lib/server/identityPolicy";
 import { prisma } from "@/lib/server/prisma";
 
 export const runtime = "nodejs";
@@ -33,11 +34,12 @@ export async function PATCH(request: NextRequest) {
 
   const body = await request.json();
   const name = typeof body.name === "string" ? body.name.trim() : session.user.name;
-  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : session.user.email;
+  const email = typeof body.email === "string" ? normalizeEmail(body.email) : session.user.email;
+  const username = typeof body.username === "string" ? normalizeUsername(body.username) : session.user.username;
   const color = typeof body.color === "string" ? body.color : session.user.color;
   const currentPassword = typeof body.currentPassword === "string" ? body.currentPassword : "";
 
-  if (name.length < 2 || !email.includes("@")) {
+  if (name.length < 2 || !email.includes("@") || !username || !isValidUsername(username)) {
     return NextResponse.json({ error: "Valid name and email are required" }, { status: 400 });
   }
 
@@ -55,13 +57,18 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: "Email is already registered" }, { status: 409 });
     }
   }
+  if (username !== session.user.username) {
+    const existingUsername = await prisma.user.findUnique({ where: { username } });
+    if (existingUsername && existingUsername.id !== session.userId) return NextResponse.json({ error: "Username is already taken" }, { status: 409 });
+  }
 
   const user = await prisma.user.update({
     data: {
       color,
       email,
       initials: initialsFromName(name),
-      name
+      name,
+      username
     },
     where: { id: session.userId }
   });
@@ -86,12 +93,14 @@ function initialsFromName(name: string) {
   return initials || name.slice(0, 2).toUpperCase();
 }
 
-function publicUser(user: { color: string; email: string; id: string; initials: string; name: string }) {
+function publicUser(user: { color: string; email: string; emailVerifiedAt: Date | null; id: string; initials: string; name: string; username: string | null }) {
   return {
     color: user.color,
     email: user.email,
+    emailVerifiedAt: user.emailVerifiedAt?.toISOString() ?? null,
     id: user.id,
     initials: user.initials,
-    name: user.name
+    name: user.name,
+    username: user.username
   };
 }

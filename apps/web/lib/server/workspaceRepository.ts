@@ -1,10 +1,26 @@
+import { randomUUID } from "node:crypto";
 import { Prisma, type DocumentType, type FileNodeKind, type JobStatus, type WorkspaceRole } from "@prisma/client";
-import { createDefaultCanvasState, normalizeCanvasState } from "@/lib/canvas/canvasDocumentSchema";
-import { activityRepository } from "@/lib/server/activityRepository";
-import { auditLogService } from "@/lib/server/auditLog";
-import { prisma } from "@/lib/server/prisma";
-import { workspaceAccessPolicy } from "@/lib/server/workspaceAccessPolicy";
-import { workspaceOwnershipPolicy } from "@/lib/server/workspaceOwnershipPolicy";
+import { createDefaultCanvasState, normalizeCanvasState } from "../canvas/canvasDocumentSchema";
+import { activityRepository } from "./activityRepository";
+import { auditLogService } from "./auditLog";
+import { messengerKeyEnvelopeService } from "./messenger/keyEnvelopeService";
+import { messengerProvisioningService } from "./messenger/provisioningService";
+import { prisma } from "./prisma";
+import { realtimeAccessRevocationPublisher } from "./realtimeAccessRevocationPublisher";
+import { workspaceAccessPolicy } from "./workspaceAccessPolicy";
+import { workspaceOwnershipPolicy } from "./workspaceOwnershipPolicy";
+
+export class WorkspaceNotFoundError extends Error {
+  constructor() {
+    super("Workspace not found");
+  }
+}
+
+export class WorkspaceAccessDeniedError extends Error {
+  constructor() {
+    super("Workspace access denied");
+  }
+}
 
 export type WorkspaceDocumentPayload = {
   id: string;
@@ -46,6 +62,15 @@ export type WorkspaceMemberPayload = {
   initials: string;
   name: string;
   role: WorkspaceRole;
+};
+
+export type WorkspaceBlockedUserPayload = {
+  blockedAt: string;
+  color: string;
+  email: string;
+  id: string;
+  initials: string;
+  name: string;
 };
 
 export type WorkspaceSettingsPayload = {
@@ -102,12 +127,16 @@ export type WorkspacePayload = {
       documentTitle: string | null;
     }[];
     invites: {
+      acceptedAt: string | null;
       id: string;
       email: string | null;
       role: WorkspaceRole;
       expiresAt: string;
       createdAt: string;
+      declinedAt: string | null;
+      revokedAt: string | null;
     }[];
+    blockedUsers: WorkspaceBlockedUserPayload[];
   } | null;
 };
 
@@ -134,8 +163,23 @@ export class WorkspaceRepository {
 
   async getWorkspacePayload(userId: string, workspaceId?: string | null): Promise<WorkspacePayload> {
     const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    if (workspaceId) {
+      const requestedWorkspaceRecord = await prisma.workspace.findUnique({
+        select: {
+          blocks: { select: { userId: true }, take: 1, where: { userId } },
+          id: true,
+          members: { select: { userId: true }, take: 1, where: { userId } }
+        },
+        where: { id: workspaceId }
+      });
+      if (!requestedWorkspaceRecord) throw new WorkspaceNotFoundError();
+      if (requestedWorkspaceRecord.blocks.length > 0 || requestedWorkspaceRecord.members.length === 0) {
+        throw new WorkspaceAccessDeniedError();
+      }
+    }
     const workspaces = await prisma.workspace.findMany({
       where: {
+        blocks: { none: { userId } },
         members: {
           some: { userId }
         }
@@ -153,8 +197,12 @@ export class WorkspaceRepository {
       await this.ensureWorkspaceSettings(activeWorkspaceId);
     }
     const activeWorkspace = activeWorkspaceId
-      ? await prisma.workspace.findUnique({
-          where: { id: activeWorkspaceId },
+      ? await prisma.workspace.findFirst({
+          where: {
+            blocks: { none: { userId } },
+            id: activeWorkspaceId,
+            members: { some: { userId } }
+          },
           include: {
             documents: { orderBy: { position: "asc" }, where: { archivedAt: null } },
             fileNodes: { orderBy: [{ parentId: "asc" }, { position: "asc" }], where: { archivedAt: null } },
@@ -173,18 +221,14 @@ export class WorkspaceRepository {
       ? await prisma.workspaceInvite.findMany({
           orderBy: { createdAt: "desc" },
           take: 30,
-          where: {
-            OR: [
-              {
-                acceptedAt: null,
-                expiresAt: { gt: new Date() }
-              },
-              {
-                acceptedAt: { not: null }
-              }
-            ],
-            workspaceId: activeWorkspace.id
-          }
+          where: { workspaceId: activeWorkspace.id }
+        })
+      : [];
+    const blockedUsers = activeWorkspace && activeMember?.role === "owner"
+      ? await prisma.workspaceBlock.findMany({
+          include: { user: true },
+          orderBy: { createdAt: "desc" },
+          where: { workspaceId: activeWorkspace.id }
         })
       : [];
 
@@ -199,10 +243,18 @@ export class WorkspaceRepository {
       activeWorkspace: activeWorkspace
         ? {
             abbreviation: this.workspaceAbbreviation(activeWorkspace.name),
+            blockedUsers: blockedUsers.map((block) => ({
+              blockedAt: block.createdAt.toISOString(),
+              color: block.user.color,
+              email: block.user.email,
+              id: block.user.id,
+              initials: block.user.initials,
+              name: block.user.name
+            })),
             documents: activeWorkspace.documents.map((document) => this.toDocumentPayload(document)),
             fileNodes: activeWorkspace.fileNodes.map((fileNode) => this.toFileNodePayload(fileNode)),
             id: activeWorkspace.id,
-            jobRuns: activeWorkspace.jobRuns.map((jobRun) => ({
+            jobRuns: activeMember?.role === "owner" ? activeWorkspace.jobRuns.map((jobRun) => ({
               createdAt: jobRun.createdAt.toISOString(),
               documentId: jobRun.documentId,
               documentTitle: jobRun.document?.title ?? null,
@@ -212,13 +264,15 @@ export class WorkspaceRepository {
               output: jobRun.output,
               status: jobRun.status,
               updatedAt: jobRun.updatedAt.toISOString()
-            })),
+            })) : [],
             invites: invites.map((invite) => ({
               acceptedAt: invite.acceptedAt?.toISOString() ?? null,
               createdAt: invite.createdAt.toISOString(),
+              declinedAt: invite.declinedAt?.toISOString() ?? null,
               email: invite.email,
               expiresAt: invite.expiresAt.toISOString(),
               id: invite.id,
+              revokedAt: invite.revokedAt?.toISOString() ?? null,
               role: invite.role
             })),
             members: activeWorkspace.members.map((member) => this.toMemberPayload(member)),
@@ -677,7 +731,7 @@ export class WorkspaceRepository {
     const document = await prisma.document.findFirstOrThrow({
       where: { archivedAt: null, id: documentId }
     });
-    await workspaceAccessPolicy.requireWorkspaceWriter(userId, document.workspaceId);
+    await workspaceAccessPolicy.requireWorkspaceLogReader(userId, document.workspaceId);
 
     const snapshot = await prisma.documentSnapshot.create({
       data: {
@@ -901,8 +955,64 @@ export class WorkspaceRepository {
     };
   }
 
+  async cancelRun(userId: string, runId: string) {
+    const run = await prisma.jobRun.findUnique({
+      include: { document: true },
+      where: { id: runId }
+    });
+    if (!run) throw new Error("Run not found");
+    await workspaceAccessPolicy.requireWorkspaceLogReader(userId, run.workspaceId);
+
+    const cancelledRun = await prisma.$transaction(async (transaction) => {
+      const result = await transaction.jobRun.updateMany({
+        data: {
+          error: null,
+          output: `${run.output}\nCancellation requested.`.trim(),
+          status: "cancelled"
+        },
+        where: {
+          id: run.id,
+          status: { in: ["pending", "running"] }
+        }
+      });
+      if (result.count === 0) throw new Error("Run is no longer active");
+
+      await activityRepository.recordWithClient(transaction, {
+        actorUserId: userId,
+        documentId: run.documentId,
+        metadata: { environmentId: run.kind, runId: run.id },
+        type: "run.cancelled",
+        workspaceId: run.workspaceId
+      });
+      await auditLogService.recordWithClient(transaction, {
+        actorUserId: userId,
+        documentId: run.documentId,
+        metadata: { environmentId: run.kind, runId: run.id },
+        type: "run.cancelled",
+        workspaceId: run.workspaceId
+      });
+
+      return transaction.jobRun.findUniqueOrThrow({
+        include: { document: true },
+        where: { id: run.id }
+      });
+    });
+
+    return {
+      createdAt: cancelledRun.createdAt.toISOString(),
+      documentId: cancelledRun.documentId,
+      documentTitle: cancelledRun.document?.title ?? null,
+      error: cancelledRun.error,
+      id: cancelledRun.id,
+      kind: cancelledRun.kind,
+      output: cancelledRun.output,
+      status: cancelledRun.status,
+      updatedAt: cancelledRun.updatedAt.toISOString()
+    };
+  }
+
   async listRuns(userId: string, workspaceId: string) {
-    await workspaceAccessPolicy.requireWorkspaceReader(userId, workspaceId);
+    await workspaceAccessPolicy.requireWorkspaceLogReader(userId, workspaceId);
     const runs = await prisma.jobRun.findMany({
       include: { document: true },
       orderBy: { createdAt: "desc" },
@@ -925,34 +1035,42 @@ export class WorkspaceRepository {
 
   async updateWorkspaceMemberRole(userId: string, workspaceId: string, memberUserId: string, role: WorkspaceRole) {
     await workspaceAccessPolicy.requireWorkspaceOwner(userId, workspaceId);
+    if (role === "owner") throw new Error("Use ownership transfer to assign the owner role");
     if (userId === memberUserId) {
       throw new Error("You cannot change your own role");
     }
 
-    const member = await prisma.workspaceMember.findUniqueOrThrow({
-      include: { user: true },
-      where: {
-        userId_workspaceId: {
-          userId: memberUserId,
-          workspaceId
-        }
-      }
-    });
-
-    if (member.role === "owner" && role !== "owner") {
-      await workspaceOwnershipPolicy.requireAnotherOwner(workspaceId, member.userId);
-    }
-
-    const updatedMember = await prisma.$transaction(async (transaction) => {
-      const updated = await transaction.workspaceMember.update({
+    const updatedMember = await this.runSerializableWorkspaceTransaction(async (transaction) => {
+      await this.requireWorkspaceOwnerWithClient(transaction, userId, workspaceId);
+      const member = await transaction.workspaceMember.findUnique({
         include: { user: true },
-        data: { role },
         where: {
           userId_workspaceId: {
             userId: memberUserId,
             workspaceId
           }
         }
+      });
+      if (!member) throw new Error("Workspace member not found");
+      if (member.role === "owner") throw new Error("The owner role can only change through ownership transfer");
+      if (member.role === role) return member;
+      const updated = await transaction.workspaceMember.update({
+        include: { user: true },
+        data: {
+          messengerAccessVersion: { increment: 1 },
+          role
+        },
+        where: {
+          userId_workspaceId: {
+            userId: memberUserId,
+            workspaceId
+          }
+        }
+      });
+      await messengerProvisioningService.appendCapabilitiesChanged(transaction, {
+        actorUserId: userId,
+        member: updated,
+        previousRole: member.role
       });
       await activityRepository.recordWithClient(transaction, {
         actorUserId: userId,
@@ -975,24 +1093,26 @@ export class WorkspaceRepository {
 
   async removeWorkspaceMember(userId: string, workspaceId: string, memberUserId: string) {
     await workspaceAccessPolicy.requireWorkspaceOwner(userId, workspaceId);
-
     workspaceOwnershipPolicy.assertMemberCanBeRemoved(userId, memberUserId);
-
-    const member = await prisma.workspaceMember.findUniqueOrThrow({
-      include: { user: true },
-      where: {
-        userId_workspaceId: {
-          userId: memberUserId,
-          workspaceId
+    await this.runSerializableWorkspaceTransaction(async (transaction) => {
+      await this.requireWorkspaceOwnerWithClient(transaction, userId, workspaceId);
+      const member = await transaction.workspaceMember.findUnique({
+        include: { user: true },
+        where: {
+          userId_workspaceId: {
+            userId: memberUserId,
+            workspaceId
+          }
         }
-      }
-    });
-
-    if (member.role === "owner") {
-      await workspaceOwnershipPolicy.requireAnotherOwner(workspaceId, member.userId);
-    }
-
-    await prisma.$transaction(async (transaction) => {
+      });
+      if (!member) throw new Error("Workspace member not found");
+      if (member.role === "owner") throw new Error("The workspace owner cannot be removed");
+      await messengerProvisioningService.revokeWorkspaceAccess(transaction, {
+        actorUserId: userId,
+        member,
+        now: new Date(),
+        reason: "removed"
+      });
       await transaction.workspaceMember.delete({
         where: {
           userId_workspaceId: {
@@ -1015,50 +1135,225 @@ export class WorkspaceRepository {
         workspaceId
       });
     });
-
+    await realtimeAccessRevocationPublisher.publish(workspaceId, memberUserId);
     return { userId: memberUserId };
+  }
+
+  async transferWorkspaceOwnership(userId: string, workspaceId: string, memberUserId: string, confirmationName: string) {
+    await workspaceAccessPolicy.requireWorkspaceOwner(userId, workspaceId);
+    if (userId === memberUserId) throw new Error("You already own this workspace");
+
+    await this.runSerializableWorkspaceTransaction(async (transaction) => {
+      await this.requireWorkspaceOwnerWithClient(transaction, userId, workspaceId);
+      const [workspace, targetMember] = await Promise.all([
+        transaction.workspace.findUnique({ select: { name: true }, where: { id: workspaceId } }),
+        transaction.workspaceMember.findUnique({
+          include: { user: true },
+          where: { userId_workspaceId: { userId: memberUserId, workspaceId } }
+        })
+      ]);
+      if (!workspace) throw new Error("Workspace not found");
+      workspaceOwnershipPolicy.assertTransferConfirmation(workspace.name, confirmationName);
+      if (!targetMember) throw new Error("Ownership can only be transferred to an active member");
+      const previousOwner = await transaction.workspaceMember.update({
+        data: {
+          messengerAccessVersion: { increment: 1 },
+          role: "editor"
+        },
+        where: { userId_workspaceId: { userId, workspaceId } }
+      });
+      const nextOwner = await transaction.workspaceMember.update({
+        data: {
+          messengerAccessVersion: { increment: 1 },
+          role: "owner"
+        },
+        include: { user: true },
+        where: { userId_workspaceId: { userId: memberUserId, workspaceId } }
+      });
+      await messengerProvisioningService.appendCapabilitiesChanged(transaction, {
+        actorUserId: userId,
+        member: previousOwner,
+        previousRole: "owner"
+      });
+      await messengerProvisioningService.appendCapabilitiesChanged(transaction, {
+        actorUserId: userId,
+        member: nextOwner,
+        previousRole: targetMember.role
+      });
+      await activityRepository.recordWithClient(transaction, {
+        actorUserId: userId,
+        metadata: { memberName: targetMember.user.name },
+        type: "workspace.ownership_transferred",
+        workspaceId
+      });
+      await auditLogService.recordWithClient(transaction, {
+        actorUserId: userId,
+        metadata: { memberName: targetMember.user.name },
+        targetUserId: memberUserId,
+        type: "workspace.ownership_transferred",
+        workspaceId
+      });
+      return nextOwner;
+    });
+
+    return { ownerUserId: memberUserId, previousOwnerUserId: userId };
+  }
+
+  async blockWorkspaceMember(userId: string, workspaceId: string, memberUserId: string) {
+    await workspaceAccessPolicy.requireWorkspaceOwner(userId, workspaceId);
+    workspaceOwnershipPolicy.assertMemberCanBeRemoved(userId, memberUserId);
+    const result = await this.runSerializableWorkspaceTransaction(async (transaction) => {
+      await this.requireWorkspaceOwnerWithClient(transaction, userId, workspaceId);
+      const member = await transaction.workspaceMember.findUnique({
+        include: { user: true },
+        where: { userId_workspaceId: { userId: memberUserId, workspaceId } }
+      });
+      if (!member) throw new Error("Workspace member not found");
+      if (member.role === "owner") throw new Error("The workspace owner cannot be blocked");
+      const now = new Date();
+      const createdBlock = await transaction.workspaceBlock.upsert({
+        create: { blockedByUserId: userId, userId: memberUserId, workspaceId },
+        update: { blockedByUserId: userId },
+        where: { userId_workspaceId: { userId: memberUserId, workspaceId } }
+      });
+      await messengerProvisioningService.revokeWorkspaceAccess(transaction, {
+        actorUserId: userId,
+        member,
+        now,
+        reason: "blocked"
+      });
+      await transaction.workspaceMember.delete({
+        where: { userId_workspaceId: { userId: memberUserId, workspaceId } }
+      });
+      await transaction.workspaceInvite.updateMany({
+        data: { revokedAt: now },
+        where: {
+          acceptedAt: null,
+          declinedAt: null,
+          recipientUserId: memberUserId,
+          revokedAt: null,
+          workspaceId
+        }
+      });
+      await transaction.userNotification.updateMany({
+        data: { readAt: now },
+        where: {
+          invite: {
+            acceptedAt: null,
+            recipientUserId: memberUserId,
+            workspaceId
+          },
+          readAt: null
+        }
+      });
+      await activityRepository.recordWithClient(transaction, {
+        actorUserId: userId,
+        metadata: { memberName: member.user.name, role: member.role },
+        type: "member.blocked",
+        workspaceId
+      });
+      await auditLogService.recordWithClient(transaction, {
+        actorUserId: userId,
+        metadata: { memberName: member.user.name, role: member.role },
+        targetUserId: memberUserId,
+        type: "member.blocked",
+        workspaceId
+      });
+      return { block: createdBlock, member };
+    });
+
+    await realtimeAccessRevocationPublisher.publish(workspaceId, memberUserId);
+    return {
+      blockedAt: result.block.createdAt.toISOString(),
+      color: result.member.user.color,
+      email: result.member.user.email,
+      id: result.member.user.id,
+      initials: result.member.user.initials,
+      name: result.member.user.name
+    };
+  }
+
+  async unblockWorkspaceUser(userId: string, workspaceId: string, blockedUserId: string) {
+    await workspaceAccessPolicy.requireWorkspaceOwner(userId, workspaceId);
+    await this.runSerializableWorkspaceTransaction(async (transaction) => {
+      await this.requireWorkspaceOwnerWithClient(transaction, userId, workspaceId);
+      const block = await transaction.workspaceBlock.findUnique({
+        include: { user: true },
+        where: { userId_workspaceId: { userId: blockedUserId, workspaceId } }
+      });
+      if (!block) throw new Error("Blocked user not found");
+      await transaction.workspaceBlock.delete({ where: { id: block.id } });
+      await activityRepository.recordWithClient(transaction, {
+        actorUserId: userId,
+        metadata: { memberName: block.user.name },
+        type: "member.unblocked",
+        workspaceId
+      });
+      await auditLogService.recordWithClient(transaction, {
+        actorUserId: userId,
+        metadata: { memberName: block.user.name },
+        targetUserId: blockedUserId,
+        type: "member.unblocked",
+        workspaceId
+      });
+    });
+
+    return { userId: blockedUserId };
   }
 
   async createDefaultWorkspaceForUser(userId: string, userName: string, workspaceName?: string) {
     const name = workspaceName?.trim() || `${userName}'s Workspace`;
     const slugBase = this.slugify(name);
     const slug = await this.uniqueWorkspaceSlug(slugBase || "workspace");
-    const workspace = await prisma.workspace.create({
-      data: {
-        members: {
-          create: {
-            role: "owner",
-            userId
-          }
-        },
-        name,
-        slug
-      }
-    });
-    await this.ensureWorkspaceSettings(workspace.id);
-
-    await prisma.document.createMany({
-      data: [
-        {
-          content: "export function start() {\n  return \"ship together\"\n}",
-          language: "typescript",
-          position: 0,
-          title: "start.ts",
-          type: "code",
-          workspaceId: workspace.id
-        },
-        {
-          content: "# First note\n\nWrite decisions, TODOs, and shared context here.",
-          language: null,
-          position: 1,
-          title: "First note",
-          type: "note",
-          workspaceId: workspace.id
+    const workspaceId = randomUUID();
+    const now = new Date();
+    const preparedKeyEnvelope = messengerKeyEnvelopeService.prepareWorkspaceKey(workspaceId);
+    return this.runSerializableWorkspaceTransaction(async (transaction) => {
+      const workspace = await transaction.workspace.create({
+        data: {
+          createdByUserId: userId,
+          id: workspaceId,
+          name,
+          slug
         }
-      ]
+      });
+      const owner = await transaction.workspaceMember.create({
+        data: {
+          role: "owner",
+          userId,
+          workspaceId
+        }
+      });
+      await transaction.workspaceSettings.create({
+        data: { workspaceId }
+      });
+      await messengerProvisioningService.provisionGeneral(transaction, {
+        member: owner,
+        now,
+        preparedKeyEnvelope
+      });
+      await transaction.document.createMany({
+        data: [
+          {
+            content: "export function start() {\n  return \"ship together\"\n}",
+            language: "typescript",
+            position: 0,
+            title: "start.ts",
+            type: "code",
+            workspaceId
+          },
+          {
+            content: "# First note\n\nWrite decisions, TODOs, and shared context here.",
+            language: null,
+            position: 1,
+            title: "First note",
+            type: "note",
+            workspaceId
+          }
+        ]
+      });
+      return workspace;
     });
-
-    return workspace;
   }
 
   async getWorkspaceSettings(userId: string, workspaceId: string): Promise<WorkspaceSettingsPayload> {
@@ -1599,6 +1894,44 @@ export class WorkspaceRepository {
       parentId: fileNode.parentId,
       position: fileNode.position
     };
+  }
+
+  private async requireWorkspaceOwnerWithClient(
+    transaction: Prisma.TransactionClient,
+    userId: string,
+    workspaceId: string
+  ) {
+    const [member, block] = await Promise.all([
+      transaction.workspaceMember.findUnique({
+        where: { userId_workspaceId: { userId, workspaceId } }
+      }),
+      transaction.workspaceBlock.findUnique({
+        where: { userId_workspaceId: { userId, workspaceId } }
+      })
+    ]);
+    if (block || member?.role !== "owner") {
+      throw new Error("Workspace access denied");
+    }
+    return member;
+  }
+
+  private async runSerializableWorkspaceTransaction<T>(
+    operation: (transaction: Prisma.TransactionClient) => Promise<T>
+  ): Promise<T> {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        return await prisma.$transaction(operation, {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 5_000,
+          timeout: 15_000
+        });
+      } catch (error) {
+        if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2034" || attempt === 3) {
+          throw error;
+        }
+      }
+    }
+    throw new Error("Workspace transaction failed");
   }
 
   private toMemberPayload(member: {

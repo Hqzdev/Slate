@@ -5,6 +5,7 @@ import { Copy01Icon, Refresh01Icon, ThumbsDownIcon, ThumbsUpIcon } from "@hugeic
 import { HugeiconsIcon } from "@hugeicons/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { createWorkspaceNavigationUrl } from "@/lib/client/workspaceNavigation";
 
 export type WorkspaceAiDocument = {
   canvasState: unknown;
@@ -51,6 +52,30 @@ type AiMessageStatus = "failed" | "pending" | "sent";
 type AiContextScope = "document" | "workspace";
 type AiMessageFeedback = "disliked" | "liked";
 type AiMode = "agent" | "ask" | "plan";
+type ComposerCommand = {
+  end: number;
+  query: string;
+  start: number;
+  trigger: "@" | "/";
+};
+type ComposerCommandOption = {
+  description: string;
+  disabled: boolean;
+  label: string;
+  value: AiContextScope | AiMode;
+};
+
+const modeLabels: Record<AiMode, string> = {
+  agent: "Agent",
+  ask: "Ask",
+  plan: "Plan"
+};
+
+function replaceAiConversationUrl(conversationId: string, workspaceId: string) {
+  const nextUrl = createWorkspaceNavigationUrl(window.location.href, { aiConversationId: conversationId, view: "ai", workspaceId });
+  window.history.replaceState(null, "", nextUrl);
+  window.dispatchEvent(new PopStateEvent("popstate"));
+}
 
 type AiMessage = {
   activeDocumentId: string | null;
@@ -711,6 +736,9 @@ export function WorkspaceAiPanel({ activeDocument, canApply, onBeforeApply, onBe
   const [agentAdvancing, setAgentAdvancing] = useState(false);
   const [agentTask, setAgentTask] = useState<AiAgentTask | null>(null);
   const [contextScope, setContextScope] = useState<AiContextScope>("workspace");
+  const [composerCommandIndex, setComposerCommandIndex] = useState(0);
+  const [composerCursor, setComposerCursor] = useState(0);
+  const [composerMenuDismissed, setComposerMenuDismissed] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(() => window.location.pathname.match(/\/workspace\/ai\/(sltx-[a-f0-9]{4}-[a-f0-9]{4})$/)?.[1] ?? null);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -719,11 +747,11 @@ export function WorkspaceAiPanel({ activeDocument, canApply, onBeforeApply, onBe
   const [loadingMore, setLoadingMore] = useState(false);
   const [messages, setMessages] = useState<AiMessage[]>([]);
   const [mode, setMode] = useState<AiMode>("ask");
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [clearingConversation, setClearingConversation] = useState(false);
   const [chatSearch, setChatSearch] = useState("");
   const [chatSwitcherOpen, setChatSwitcherOpen] = useState(false);
   const [conversations, setConversations] = useState<AiConversationSummary[]>([]);
-  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [messageFeedback, setMessageFeedback] = useState<Record<string, AiMessageFeedback>>({});
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [pendingActionIds, setPendingActionIds] = useState<Set<string>>(new Set());
@@ -735,6 +763,7 @@ export function WorkspaceAiPanel({ activeDocument, canApply, onBeforeApply, onBe
   const activeSendControllerRef = useRef<AbortController | null>(null);
   const agentAdvancingRef = useRef(false);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerShellRef = useRef<HTMLDivElement | null>(null);
   const controllersRef = useRef<Set<AbortController>>(new Set());
   const historyRef = useRef<HTMLDivElement | null>(null);
   const scrollFrameRef = useRef<number | null>(null);
@@ -776,6 +805,39 @@ export function WorkspaceAiPanel({ activeDocument, canApply, onBeforeApply, onBe
   const contextLabel = contextDocument ? `Document context · ${contextDocument.title}` : `Workspace context · ${workspaceName}`;
   const agentBusy = Boolean(agentTask && ["awaiting_confirmation", "blocked", "running"].includes(agentTask.status));
   const visibleConversations = useMemo(() => conversations.filter((conversation) => conversation.title.toLowerCase().includes(chatSearch.trim().toLowerCase())), [chatSearch, conversations]);
+  const composerCommand = useMemo<ComposerCommand | null>(() => {
+    const prefix = draft.slice(0, composerCursor);
+    const match = prefix.match(/(^|\s)([@/])([^\s@/]*)$/);
+    if (!match) return null;
+    const query = match[3];
+    const trigger = match[2] as ComposerCommand["trigger"];
+    return { end: composerCursor, query, start: composerCursor - query.length - 1, trigger };
+  }, [composerCursor, draft]);
+  const composerCommandOptions = useMemo<ComposerCommandOption[]>(() => {
+    if (!composerCommand) return [];
+    const candidates: ComposerCommandOption[] = composerCommand.trigger === "@"
+      ? [
+          { description: `Use all of ${workspaceName} as context`, disabled: false, label: "Workspace", value: "workspace" },
+          { description: activeDocument ? `Use ${activeDocument.title} as context` : "Open a document to use it as context", disabled: !activeDocument, label: "Current document", value: "document" }
+        ]
+      : [
+          { description: "Ask a question about the selected context", disabled: false, label: "Ask", value: "ask" },
+          { description: "Create a plan before making changes", disabled: false, label: "Plan", value: "plan" },
+          { description: canApply ? "Make changes through reviewable drafts" : "Editor access is required", disabled: !canApply, label: "Agent", value: "agent" }
+        ];
+    const query = composerCommand.query.toLowerCase();
+    return candidates.filter((candidate) => `${candidate.label} ${candidate.description}`.toLowerCase().includes(query));
+  }, [activeDocument, canApply, composerCommand, workspaceName]);
+  const composerMenuOpen = Boolean(composerCommand && !composerMenuDismissed);
+
+  useEffect(() => {
+    function closeComposerMenu(event: MouseEvent) {
+      if (!composerShellRef.current?.contains(event.target as Node)) setComposerMenuDismissed(true);
+    }
+
+    document.addEventListener("mousedown", closeComposerMenu);
+    return () => document.removeEventListener("mousedown", closeComposerMenu);
+  }, []);
 
   const loadConversations = useCallback(async (signal?: AbortSignal) => {
     const response = await fetch(`/api/workspaces/${workspaceId}/ai/conversations`, { cache: "no-store", signal });
@@ -809,7 +871,7 @@ export function WorkspaceAiPanel({ activeDocument, canApply, onBeforeApply, onBe
       setMessages(normalizeMessages(body));
       setActions(normalizeActions(body));
       setNextCursor(normalizeNextCursor(body));
-      window.history.replaceState(null, "", `/workspace/ai/${nextConversationId}`);
+      replaceAiConversationUrl(nextConversationId, workspaceId);
     } catch (loadError) {
       if (!controller.signal.aborted) setError(loadError instanceof Error ? loadError.message : "Conversation could not be loaded");
     } finally {
@@ -1137,7 +1199,6 @@ export function WorkspaceAiPanel({ activeDocument, canApply, onBeforeApply, onBe
 
   async function copyMessage(message: AiMessage) {
     await window.navigator.clipboard.writeText(message.content).catch(() => undefined);
-    setCopiedMessageId(message.id);
   }
 
   function setFeedback(messageId: string, feedback: AiMessageFeedback) {
@@ -1222,11 +1283,58 @@ export function WorkspaceAiPanel({ activeDocument, canApply, onBeforeApply, onBe
 
   function handleDraftChange(value: string, textarea: HTMLTextAreaElement) {
     setDraft(value);
+    setComposerCursor(textarea.selectionStart);
+    setComposerCommandIndex(0);
+    setComposerMenuDismissed(false);
+    setModeMenuOpen(false);
     textarea.style.height = "auto";
     textarea.style.height = `${Math.min(160, textarea.scrollHeight)}px`;
   }
 
+  function handleComposerSelection(textarea: HTMLTextAreaElement) {
+    setComposerCursor(textarea.selectionStart);
+    setComposerCommandIndex(0);
+    setComposerMenuDismissed(false);
+  }
+
+  function applyComposerCommand(option: ComposerCommandOption) {
+    if (!composerCommand || option.disabled) return;
+    if (composerCommand.trigger === "@") setContextScope(option.value as AiContextScope);
+    else setMode(option.value as AiMode);
+    const nextDraft = `${draft.slice(0, composerCommand.start)}${draft.slice(composerCommand.end)}`;
+    setDraft(nextDraft);
+    setComposerCursor(composerCommand.start);
+    setComposerMenuDismissed(false);
+    window.requestAnimationFrame(() => {
+      composerRef.current?.focus();
+      composerRef.current?.setSelectionRange(composerCommand.start, composerCommand.start);
+    });
+  }
+
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (composerMenuOpen && composerCommand) {
+      if (event.key === "ArrowDown" && composerCommandOptions.length > 0) {
+        event.preventDefault();
+        setComposerCommandIndex((current) => (current + 1) % composerCommandOptions.length);
+        return;
+      }
+      if (event.key === "ArrowUp" && composerCommandOptions.length > 0) {
+        event.preventDefault();
+        setComposerCommandIndex((current) => (current - 1 + composerCommandOptions.length) % composerCommandOptions.length);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setComposerMenuDismissed(true);
+        return;
+      }
+      if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+        event.preventDefault();
+        const option = composerCommandOptions[Math.min(composerCommandIndex, composerCommandOptions.length - 1)];
+        if (option) applyComposerCommand(option);
+        return;
+      }
+    }
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
     event.stopPropagation();
     event.preventDefault();
@@ -1328,7 +1436,7 @@ export function WorkspaceAiPanel({ activeDocument, canApply, onBeforeApply, onBe
       setExpandedActionIds(new Set());
       setChatSwitcherOpen(false);
       await loadConversations();
-      window.history.replaceState(null, "", `/workspace/ai/${createdConversationId}`);
+      replaceAiConversationUrl(createdConversationId, workspaceId);
       stickToBottomRef.current = true;
     } catch (clearError) {
       if (!controller.signal.aborted) setError(clearError instanceof Error ? clearError.message : "Conversation could not be cleared");
@@ -1341,13 +1449,12 @@ export function WorkspaceAiPanel({ activeDocument, canApply, onBeforeApply, onBe
   return (
     <div className="ai-panel">
       <header className="ai-panel-header">
-        <span className="ai-panel-icon">✦</span>
         <div className="ai-panel-heading">
           <strong>Slate Assistant</strong>
           <small>{contextLabel}</small>
         </div>
         <div className="ai-panel-actions">
-          <button disabled={loading || sending || clearingConversation || agentBusy} onClick={() => setChatSwitcherOpen((current) => !current)} type="button">Chats</button>
+          <button className={chatSwitcherOpen ? "active" : ""} disabled={loading || sending || clearingConversation || agentBusy} onClick={() => setChatSwitcherOpen((current) => !current)} type="button">Chats</button>
           <button disabled={loading || sending || clearingConversation || agentBusy} onClick={() => void startNewChat()} type="button">New chat</button>
           {chatSwitcherOpen && (
             <div className="ai-chat-switcher">
@@ -1375,14 +1482,16 @@ export function WorkspaceAiPanel({ activeDocument, canApply, onBeforeApply, onBe
         )}
         {!loading && messages.length === 0 && actions.length === 0 && !agentTask && (
           <div className="ai-empty-state">
-            <span className="ai-empty-mark">✦</span>
             <h2>How can I help with this workspace?</h2>
-            <p>Ask about files, architecture, runs, or prepare a reviewable workspace change.</p>
-            <div className="ai-suggestion-list">
-              <button onClick={() => setDraft("Summarize this workspace and its most important files.")} type="button">Summarize this workspace</button>
-              <button onClick={() => setDraft("Find the most important files and explain why they matter.")} type="button">Find the most important files</button>
-              <button onClick={() => setDraft("Explain the current architecture and its main components.")} type="button">Explain the current architecture</button>
-              <button onClick={() => setDraft("Review the latest run and identify the next action.")} type="button">Review the latest run</button>
+            <p>Ask about files, architecture, runs, or workspace changes.</p>
+            <div className="ai-suggestions-group">
+              <span>Suggested prompts</span>
+              <div className="ai-suggestion-list">
+                <button onClick={() => setDraft("Summarize this workspace and its most important files.")} type="button">Summarize workspace</button>
+                <button onClick={() => setDraft("Find the most important files and explain why they matter.")} type="button">Find important files</button>
+                <button onClick={() => setDraft("Explain the current architecture and its main components.")} type="button">Explain architecture</button>
+                <button onClick={() => setDraft("Review the latest run and identify the next action.")} type="button">Review latest run</button>
+              </div>
             </div>
           </div>
         )}
@@ -1406,12 +1515,10 @@ export function WorkspaceAiPanel({ activeDocument, canApply, onBeforeApply, onBe
             <article className={`ai-message ai-message-${message.role}${message.role === "assistant" ? " ai-message-appear" : ""}${grouped ? " ai-message-grouped" : ""}`} key={message.id}>
               {!grouped && message.role === "assistant" && (
                 <div className="ai-message-meta">
-                  <strong>Slate AI</strong>
                   <time title={new Date(message.createdAt).toLocaleString()}>{formatMessageTime(message.createdAt)}</time>
                 </div>
               )}
               {message.role === "assistant" ? <AssistantMessageContent content={message.content} messageId={message.id} onComplete={handleTypingComplete} onProgress={scrollHistoryToBottom} shouldType={message.id === typingMessageId} /> : <p>{message.content}</p>}
-              {message.status === "pending" && !retryablePending && <small className="ai-message-state">{activelySending ? "Reading workspace" : "Thinking"}</small>}
               {failed && (
                 <div className="ai-message-error-card">
                   <strong>I couldn&apos;t complete that request.</strong>
@@ -1431,18 +1538,18 @@ export function WorkspaceAiPanel({ activeDocument, canApply, onBeforeApply, onBe
               )}
               {message.status === "sent" && message.role === "assistant" && (
                 <div className="ai-message-actions">
-                  <button aria-label={copiedMessageId === message.id ? "Copied" : "Copy response"} className={copiedMessageId === message.id ? "active" : ""} onClick={() => void copyMessage(message)} title={copiedMessageId === message.id ? "Copied" : "Copy response"} type="button">
-                    <HugeiconsIcon icon={Copy01Icon} size={20} strokeWidth={1.8} />
+                  <button aria-label="Copy response" data-tooltip="Copy" onClick={() => void copyMessage(message)} type="button">
+                    <HugeiconsIcon icon={Copy01Icon} size={16} strokeWidth={1.8} />
                   </button>
-                  <button aria-label="Like response" aria-pressed={messageFeedback[message.id] === "liked"} className={messageFeedback[message.id] === "liked" ? "active" : ""} onClick={() => setFeedback(message.id, "liked")} title="Like response" type="button">
-                    <HugeiconsIcon icon={ThumbsUpIcon} size={20} strokeWidth={1.8} />
+                  <button aria-label="Like response" aria-pressed={messageFeedback[message.id] === "liked"} className={messageFeedback[message.id] === "liked" ? "active" : ""} data-tooltip="Like" onClick={() => setFeedback(message.id, "liked")} type="button">
+                    <HugeiconsIcon icon={ThumbsUpIcon} size={16} strokeWidth={1.8} />
                   </button>
-                  <button aria-label="Dislike response" aria-pressed={messageFeedback[message.id] === "disliked"} className={messageFeedback[message.id] === "disliked" ? "active" : ""} onClick={() => setFeedback(message.id, "disliked")} title="Dislike response" type="button">
-                    <HugeiconsIcon icon={ThumbsDownIcon} size={20} strokeWidth={1.8} />
+                  <button aria-label="Dislike response" aria-pressed={messageFeedback[message.id] === "disliked"} className={messageFeedback[message.id] === "disliked" ? "active" : ""} data-tooltip="Dislike" onClick={() => setFeedback(message.id, "disliked")} type="button">
+                    <HugeiconsIcon icon={ThumbsDownIcon} size={16} strokeWidth={1.8} />
                   </button>
                   {sourceRequest?.role === "user" && (
-                    <button aria-label="Regenerate response" disabled={loading || sending} onClick={() => repeatMessage(sourceRequest)} title="Regenerate response" type="button">
-                      <HugeiconsIcon icon={Refresh01Icon} size={20} strokeWidth={1.8} />
+                    <button aria-label="Regenerate response" data-tooltip="Regenerate" disabled={loading || sending} onClick={() => repeatMessage(sourceRequest)} type="button">
+                      <HugeiconsIcon icon={Refresh01Icon} size={16} strokeWidth={1.8} />
                     </button>
                   )}
                 </div>
@@ -1594,17 +1701,40 @@ export function WorkspaceAiPanel({ activeDocument, canApply, onBeforeApply, onBe
 
       {error && <div className="ai-panel-error" role="alert"><strong>Assistant unavailable</strong><span>{friendlyAiError(error).message}</span></div>}
       <form className="ai-composer" onSubmit={submitMessage}>
-        <div className="ai-composer-shell">
-          <textarea aria-label="Message Slate Assistant" disabled={loading || sending || (mode === "agent" && agentBusy)} maxLength={maximumMessageLength} onChange={(event) => handleDraftChange(event.target.value, event.target)} onKeyDown={handleComposerKeyDown} placeholder={loading ? "Loading conversation" : mode === "plan" ? "Describe what should be planned..." : mode === "agent" ? agentBusy ? "Finish or stop the current agent task" : "Describe the task for the agent..." : "Ask anything about this workspace..."} ref={composerRef} rows={1} value={draft} />
+        <div className="ai-composer-shell" ref={composerShellRef}>
+          {composerMenuOpen && composerCommand && (
+            <div aria-label={composerCommand.trigger === "@" ? "Context options" : "Assistant actions"} className="ai-composer-command-menu" data-trigger={composerCommand.trigger} role="listbox">
+              <div className="ai-composer-command-heading">
+                <span aria-hidden="true">{composerCommand.trigger}</span>
+                <div><strong>{composerCommand.trigger === "@" ? "Add context" : "Choose an action"}</strong><small>{composerCommand.trigger === "@" ? "Select what the assistant can use" : "Select how the assistant should respond"}</small></div>
+              </div>
+              {composerCommandOptions.length > 0 ? composerCommandOptions.map((option, index) => (
+                <button aria-selected={index === composerCommandIndex} className={index === composerCommandIndex ? "active" : ""} disabled={option.disabled} key={option.value} onClick={() => applyComposerCommand(option)} role="option" type="button">
+                  <span>{option.label}</span><small>{option.description}</small>
+                </button>
+              )) : <p>No matching options</p>}
+            </div>
+          )}
+          <textarea aria-label="Message Slate Assistant" disabled={loading || sending || (mode === "agent" && agentBusy)} maxLength={maximumMessageLength} onChange={(event) => handleDraftChange(event.target.value, event.target)} onKeyDown={handleComposerKeyDown} onSelect={(event) => handleComposerSelection(event.currentTarget)} placeholder={loading ? "Loading conversation" : mode === "plan" ? "Describe what should be planned..." : mode === "agent" ? agentBusy ? "Finish or stop the current agent task" : "Describe the task for the agent..." : "Ask anything about this workspace..."} ref={composerRef} rows={1} value={draft} />
           <div className="ai-composer-footer">
-            <div aria-label="Assistant mode" className="ai-mode-switcher" role="group">
-              <button aria-pressed={mode === "ask"} className={mode === "ask" ? "active" : ""} disabled={sending} onClick={() => setMode("ask")} type="button">Ask</button>
-              <button aria-pressed={mode === "plan"} className={mode === "plan" ? "active" : ""} disabled={sending} onClick={() => setMode("plan")} type="button">Plan</button>
-              <button aria-pressed={mode === "agent"} className={mode === "agent" ? "active" : ""} disabled={sending || !canApply} onClick={() => setMode("agent")} title={canApply ? "Agent can change this workspace after confirmation" : "Editor access required"} type="button">Agent</button>
+            <div className="ai-mode-menu" data-open={modeMenuOpen ? "true" : "false"}>
+              <button aria-expanded={modeMenuOpen} aria-haspopup="menu" className="ai-mode-trigger" disabled={sending} onClick={() => { setComposerMenuDismissed(true); setModeMenuOpen((open) => !open); }} type="button">
+                <span>{modeLabels[mode]}</span>
+                <span aria-hidden="true">⌄</span>
+              </button>
+              {modeMenuOpen && (
+                <div aria-label="Assistant mode" className="ai-mode-options" role="menu">
+                  {(["ask", "plan", "agent"] as AiMode[]).map((nextMode) => (
+                    <button aria-checked={mode === nextMode} className={mode === nextMode ? "active" : ""} disabled={nextMode === "agent" && !canApply} key={nextMode} onClick={() => { setMode(nextMode); setModeMenuOpen(false); }} role="menuitemradio" title={nextMode === "agent" && !canApply ? "Editor access required" : undefined} type="button">
+                      {modeLabels[nextMode]}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             <div aria-label="Assistant context" className="ai-context-switcher" role="group">
-              <button aria-pressed={effectiveContextScope === "workspace"} className={effectiveContextScope === "workspace" ? "active" : ""} onClick={() => setContextScope("workspace")} type="button">Workspace</button>
-              <button aria-pressed={effectiveContextScope === "document"} className={effectiveContextScope === "document" ? "active" : ""} disabled={!activeDocument} onClick={() => setContextScope("document")} title={activeDocument?.title ?? "Open a document to use document context"} type="button">Current document</button>
+              <button aria-pressed={effectiveContextScope === "workspace"} className={effectiveContextScope === "workspace" ? "active" : ""} onClick={() => { setComposerMenuDismissed(true); setContextScope("workspace"); }} type="button">Workspace</button>
+              <button aria-pressed={effectiveContextScope === "document"} className={effectiveContextScope === "document" ? "active" : ""} disabled={!activeDocument} onClick={() => { setComposerMenuDismissed(true); setContextScope("document"); }} title={activeDocument ? `Use ${activeDocument.title} as context` : "Open a document to use document context"} type="button">Current document</button>
             </div>
             <span className="ai-composer-shortcut">Enter to send · Shift Enter for newline</span>
             {sending ? (

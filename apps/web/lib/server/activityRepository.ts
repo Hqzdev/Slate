@@ -21,7 +21,7 @@ type ActivityEventInput = {
 
 export class ActivityRepository {
   async listWorkspaceEvents(userId: string, workspaceId: string): Promise<ActivityEventPayload[]> {
-    await workspaceAccessPolicy.requireWorkspaceReader(userId, workspaceId);
+    await workspaceAccessPolicy.requireWorkspaceLogReader(userId, workspaceId);
     const events = await prisma.activityEvent.findMany({
       include: {
         actor: { select: { name: true } },

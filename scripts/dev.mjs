@@ -17,7 +17,10 @@ class DevelopmentStack {
       "--wait",
       "postgres",
       "redis",
+      "minio",
+      "clamav",
     ]);
+    this.runSetup("MinIO bucket", "docker", ["compose", "run", "--rm", "minio-init"]);
     this.runSetup("Prisma clients", "npm", [
       "--prefix",
       "apps/web",
@@ -30,8 +33,11 @@ class DevelopmentStack {
       "run",
       "db:deploy",
     ]);
+    this.runSetup("Messenger media worker", "docker", ["compose", "up", "-d", "--build", "--wait", "messenger-media"]);
     this.startService("web", "node", ["scripts/run-next.mjs", "dev"], "apps/web");
     this.startService("sync", "node", ["src/server.js"], "services/sync");
+    this.startService("messenger-realtime", "node", ["src/server.js"], "services/messenger-realtime");
+    this.startService("messenger-ai", "npm", ["run", "messenger:ai:worker"], "apps/web");
     this.startService("execution", "node", ["src/worker.js"], "services/execution");
   }
 

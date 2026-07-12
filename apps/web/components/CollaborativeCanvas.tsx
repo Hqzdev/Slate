@@ -34,7 +34,7 @@ import * as Y from "yjs";
 type CollaborativeCanvasProps = {
   canvasId: string;
   initialState: unknown;
-  onCommentSelectionChange: (shape: { id: string; name: string } | null) => void;
+  interactionEnabled: boolean;
   onLocalSaveBlockedChange: (documentId: string, blocked: boolean) => void;
   onPresenceChange: (users: LiveCursorUser[]) => void;
   onRealtimeStatusChange: (status: RealtimeConnectionStatus) => void;
@@ -1100,7 +1100,7 @@ function documentsEqual(left: CanvasDocument, right: CanvasDocument) {
   return JSON.stringify({ ...left, viewport: undefined }) === JSON.stringify({ ...right, viewport: undefined });
 }
 
-export function CollaborativeCanvas({ canvasId, initialState, onCommentSelectionChange, onLocalSaveBlockedChange, onStateChange, onPresenceChange, onRealtimeStatusChange, readOnly, registerDocumentFlush, roomName, saveValidationError, title, user }: CollaborativeCanvasProps) {
+export function CollaborativeCanvas({ canvasId, initialState, interactionEnabled, onLocalSaveBlockedChange, onStateChange, onPresenceChange, onRealtimeStatusChange, readOnly, registerDocumentFlush, roomName, saveValidationError, title, user }: CollaborativeCanvasProps) {
   const roomKey = useMemo(() => `slate:room:${roomName}:canvas:${canvasId}`, [canvasId, roomName]);
   const [document, setDocument] = useState<CanvasDocument>(() => normalizeDocument(initialState));
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -1122,7 +1122,6 @@ export function CollaborativeCanvas({ canvasId, initialState, onCommentSelection
   const dragStateRef = useRef<DragState | null>(null);
   const documentRef = useRef(document);
   const hostRef = useRef<HTMLDivElement | null>(null);
-  const onCommentSelectionChangeRef = useRef(onCommentSelectionChange);
   const onLocalSaveBlockedChangeRef = useRef(onLocalSaveBlockedChange);
   const onStateChangeRef = useRef(onStateChange);
   const onPresenceChangeRef = useRef(onPresenceChange);
@@ -1137,7 +1136,6 @@ export function CollaborativeCanvas({ canvasId, initialState, onCommentSelection
   const snapshotMapRef = useRef<Y.Map<unknown> | null>(null);
   const textEditCancelledRef = useRef(false);
   onLocalSaveBlockedChangeRef.current = onLocalSaveBlockedChange;
-  onCommentSelectionChangeRef.current = onCommentSelectionChange;
   onStateChangeRef.current = onStateChange;
   readOnlyByCanvasRef.current.set(canvasId, readOnly);
 
@@ -1176,8 +1174,6 @@ export function CollaborativeCanvas({ canvasId, initialState, onCommentSelection
   }, [document.shapes, dragPreview]);
   const renderedSelectedShapes = renderedShapes.filter((shape) => selectedIds.includes(shape.id));
   const renderedSelectedShape = renderedSelectedShapes.length === 1 ? renderedSelectedShapes[0] : null;
-  const selectedCommentShapeId = renderedSelectedShape?.id ?? null;
-  const selectedCommentShapeName = renderedSelectedShape?.name ?? null;
   const selectedBounds = getSelectedBounds(selectedShapes);
   const stats: CanvasStats = {
     activeToolId,
@@ -1193,12 +1189,6 @@ export function CollaborativeCanvas({ canvasId, initialState, onCommentSelection
   useEffect(() => {
     documentRef.current = document;
   }, [document]);
-
-  useEffect(() => {
-    onCommentSelectionChangeRef.current(selectedCommentShapeId && selectedCommentShapeName ? { id: selectedCommentShapeId, name: selectedCommentShapeName } : null);
-  }, [selectedCommentShapeId, selectedCommentShapeName]);
-
-  useEffect(() => () => onCommentSelectionChangeRef.current(null), [canvasId]);
 
   useEffect(() => {
     const synchronizationTimer = window.setTimeout(() => {
@@ -1999,6 +1989,7 @@ export function CollaborativeCanvas({ canvasId, initialState, onCommentSelection
 
   useEffect(() => {
     function handleKeyboard(event: KeyboardEvent) {
+      if (!interactionEnabled) return;
       if (isEditableTarget(event.target)) return;
       const commandKey = event.metaKey || event.ctrlKey;
 
@@ -2101,6 +2092,7 @@ export function CollaborativeCanvas({ canvasId, initialState, onCommentSelection
 
   useEffect(() => {
     function handleCanvasCommand(event: Event) {
+      if (!interactionEnabled) return;
       const detail = (event as CustomEvent<{ canvasId?: string; command?: string }>).detail;
       if (detail?.canvasId !== canvasId) return;
       if (detail.command === "toggleSnap") toggleSnap();

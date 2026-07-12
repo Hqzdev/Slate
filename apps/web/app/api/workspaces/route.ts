@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { guardMutationRequest } from "@/lib/server/apiSecurity";
 import { authService } from "@/lib/server/auth";
-import { workspaceRepository } from "@/lib/server/workspaceRepository";
+import { WorkspaceAccessDeniedError, WorkspaceNotFoundError, workspaceRepository } from "@/lib/server/workspaceRepository";
 
 export const runtime = "nodejs";
 
@@ -17,11 +17,18 @@ export async function GET(request: NextRequest) {
     if (!user) {
       return NextResponse.json({ error: "Authentication required" }, { status: 401 });
     }
+    if (!user.onboardingCompletedAt) return NextResponse.json({ code: "onboarding_required", error: "Complete onboarding before using a workspace" }, { status: 403 });
 
     const workspaceId = request.nextUrl.searchParams.get("workspaceId");
     const payload = await workspaceRepository.getWorkspacePayload(user.id, workspaceId);
     return NextResponse.json(payload);
   } catch (error) {
+    if (error instanceof WorkspaceNotFoundError) {
+      return NextResponse.json({ code: "workspace_not_found", error: error.message }, { status: 404 });
+    }
+    if (error instanceof WorkspaceAccessDeniedError) {
+      return NextResponse.json({ code: "workspace_access_denied", error: error.message }, { status: 403 });
+    }
     return NextResponse.json({ error: workspaceErrorMessage(error, "Workspace failed to load") }, { status: 500 });
   }
 }
@@ -35,6 +42,7 @@ export async function POST(request: NextRequest) {
     if (!user) {
       return NextResponse.json({ error: "Authentication required" }, { status: 401 });
     }
+    if (!user.emailVerifiedAt || !user.onboardingCompletedAt) return NextResponse.json({ error: "Complete account setup before creating a workspace" }, { status: 403 });
 
     const body = await request.json().catch(() => ({})) as { name?: unknown };
     const workspaceName = typeof body.name === "string" ? body.name.trim() : "";

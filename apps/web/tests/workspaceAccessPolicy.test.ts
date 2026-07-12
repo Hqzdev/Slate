@@ -13,7 +13,7 @@ type Member = {
   };
 };
 
-function createPolicy(input: { documentExists?: boolean; member?: Member | null }) {
+function createPolicy(input: { blocked?: boolean; documentExists?: boolean; member?: Member | null }) {
   const calls: { documentWhere: unknown[]; memberWhere: unknown[] } = {
     documentWhere: [],
     memberWhere: []
@@ -29,6 +29,11 @@ function createPolicy(input: { documentExists?: boolean; member?: Member | null 
       async findUnique(query: { where: unknown }) {
         calls.memberWhere.push(query.where);
         return input.member ?? null;
+      }
+    },
+    workspaceBlock: {
+      async findUnique() {
+        return input.blocked ? { id: "block-1" } : null;
       }
     }
   };
@@ -74,10 +79,30 @@ test("workspace owners reject editors", async () => {
   );
 });
 
+test("workspace logs are available only to owners", async () => {
+  const { policy: ownerPolicy } = createPolicy({ member: member("owner") });
+  const { policy: editorPolicy } = createPolicy({ member: member("editor") });
+
+  const owner = await ownerPolicy.requireWorkspaceLogReader("owner-user", "workspace-1");
+  assert.equal(owner.role, "owner");
+  await assert.rejects(
+    () => editorPolicy.requireWorkspaceLogReader("editor-user", "workspace-1"),
+    /Workspace access denied/
+  );
+});
+
 test("missing memberships are denied", async () => {
   const { policy } = createPolicy({ member: null });
   await assert.rejects(
     () => policy.requireWorkspaceReader("outsider-user", "workspace-1"),
+    /Workspace access denied/
+  );
+});
+
+test("blocked members are denied even when membership exists", async () => {
+  const { policy } = createPolicy({ blocked: true, member: member("editor") });
+  await assert.rejects(
+    () => policy.requireWorkspaceReader("editor-user", "workspace-1"),
     /Workspace access denied/
   );
 });
@@ -95,6 +120,14 @@ test("realtime rooms reject missing memberships", async () => {
   const grant = await policy.authorizeRealtimeRoom("outsider-user", "slate:room:workspace-1:file:document-1");
   assert.equal(grant, null);
   assert.equal(calls.memberWhere.length, 1);
+  assert.equal(calls.documentWhere.length, 0);
+});
+
+test("realtime rooms reject blocked members before loading membership or document", async () => {
+  const { calls, policy } = createPolicy({ blocked: true, member: member("editor") });
+  const grant = await policy.authorizeRealtimeRoom("editor-user", "slate:room:workspace-1:file:document-1");
+  assert.equal(grant, null);
+  assert.equal(calls.memberWhere.length, 0);
   assert.equal(calls.documentWhere.length, 0);
 });
 
