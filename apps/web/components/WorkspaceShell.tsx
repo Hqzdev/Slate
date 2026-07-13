@@ -2,12 +2,13 @@
 
 import dynamic from "next/dynamic";
 import { type DragEvent, type FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIcon, AiIcon, BellIcon, CanvasIcon, ChevronDownIcon, CodeIcon, CollapseIcon, CommandIcon, CopyIcon, DashboardIcon, FileIcon, FilePlusIcon, FolderIcon, FolderPlusIcon, GithubIcon, NoteIcon, PlayIcon, PlusIcon, RefreshIcon, RenameIcon, SearchIcon, SidebarActivityIcon, SidebarAiIcon, SidebarCommandIcon, SidebarDashboardIcon, SidebarPlusIcon, SidebarRefreshIcon, SidebarSettingsIcon, SidebarSupportIcon, SidebarToggleIcon, TrashIcon, UsersIcon } from "@/components/Icons";
+import { ActivityIcon, AiIcon, BellIcon, CanvasIcon, ChevronDownIcon, CodeIcon, CollapseIcon, CommandIcon, CopyIcon, DashboardAiIcon, DashboardCanvasIcon, DashboardChevronDownIcon, DashboardCodeIcon, DashboardFileIcon, DashboardGithubIcon, DashboardHistoryIcon, DashboardInviteIcon, DashboardNewDocumentIcon, DashboardNoteIcon, DashboardRunIcon, DashboardWorkspaceIcon, DashboardIcon, FileIcon, FilePlusIcon, FolderIcon, FolderPlusIcon, GithubIcon, NoteIcon, PlayIcon, PlusIcon, RefreshIcon, RenameIcon, SearchIcon, SidebarActivityIcon, SidebarAiIcon, SidebarCommandIcon, SidebarDashboardIcon, SidebarPlusIcon, SidebarRefreshIcon, SidebarSettingsIcon, SidebarSupportIcon, SidebarToggleIcon, TrashIcon, UsersIcon } from "@/components/Icons";
 import { DocumentHistoryPanel } from "@/components/DocumentHistoryPanel";
 import { ContextualErrorPage, type ErrorPageVariant } from "@/components/ContextualErrorPage";
 import { SettingsModal } from "@/components/SettingsModal";
 import { WorkspaceLoadingShell } from "@/components/WorkspaceLoadingShell";
 import { WorkspaceGuide } from "@/components/WorkspaceGuide";
+import { GitSyncCard } from "@/components/GitSyncCard";
 import { WorkspaceAiPanel, type WorkspaceAiApplyResult } from "@/components/WorkspaceAiPanel";
 import { WorkspaceMessengerPage } from "@/components/messenger/WorkspaceMessengerPage";
 import { useMessengerUnread } from "@/components/messenger/useMessengerUnread";
@@ -2176,6 +2177,13 @@ export function WorkspaceShell({ standaloneMessenger = false }: { standaloneMess
     return <FileIcon />;
   }
 
+  function renderDashboardDocumentTypeIcon(type: WorkspaceTabType | null) {
+    if (type === "canvas") return <DashboardCanvasIcon />;
+    if (type === "code") return <DashboardCodeIcon />;
+    if (type === "note") return <DashboardNoteIcon />;
+    return <DashboardFileIcon />;
+  }
+
   function renderStarterPreview(type: WorkspaceTabType) {
     if (type === "code") {
       return (
@@ -2278,11 +2286,11 @@ export function WorkspaceShell({ standaloneMessenger = false }: { standaloneMess
               </button>
             </div>
             <button className={continueDocument ? "workspace-dashboard-primary-action secondary" : "workspace-dashboard-primary-action"} disabled={!canEdit} onClick={() => beginFileCreation("document", undefined, "new-file.ts")} type="button">
-              <FilePlusIcon />
+              <DashboardNewDocumentIcon />
               New document
             </button>
             <button className="workspace-dashboard-primary-action secondary" disabled={!canEdit} onClick={() => { setGitImportOpen(true); setGitImportError(null); }} type="button">
-              <GithubIcon />
+              <DashboardGithubIcon />
               Import GitHub
             </button>
           </div>
@@ -2290,13 +2298,13 @@ export function WorkspaceShell({ standaloneMessenger = false }: { standaloneMess
 
         {gitImportOpen && (
           <form className="git-import-form" onSubmit={importGitRepository}>
-            <input autoFocus disabled={gitImportPending} onChange={(event) => setGitImportUrl(event.target.value)} placeholder="https://github.com/owner/repository" required type="url" value={gitImportUrl} />
+            <div className="git-import-controls">
+              <input aria-label="Public GitHub repository URL" autoFocus disabled={gitImportPending} onChange={(event) => setGitImportUrl(event.target.value)} placeholder="https://github.com/owner/repository" required type="url" value={gitImportUrl} />
+              <button disabled={gitImportPending} type="submit">{gitImportPending ? "Importing…" : "Import repository"}</button>
+            </div>
             <small>Imports up to 25 supported text files from a public GitHub repository.</small>
             {gitImportError && <strong>{gitImportError}</strong>}
-            <div>
-              <button disabled={gitImportPending} type="submit">{gitImportPending ? "Importing…" : "Import repository"}</button>
-              <button disabled={gitImportPending} onClick={() => { setGitImportOpen(false); setGitImportError(null); }} type="button">Cancel</button>
-            </div>
+            <button className="git-import-cancel" disabled={gitImportPending} onClick={() => { setGitImportOpen(false); setGitImportError(null); }} type="button">Cancel</button>
           </form>
         )}
 
@@ -2310,7 +2318,7 @@ export function WorkspaceShell({ standaloneMessenger = false }: { standaloneMess
           {continueDocument ? (
             <div className="workspace-continue-content">
               <button className={`workspace-continue-document document-type-${continueDocument.type}`} onClick={() => selectDocument(continueDocument.id)} type="button">
-                <span className="workspace-continue-icon">{renderDocumentTypeIcon(continueDocument.type)}</span>
+                <span className="workspace-continue-icon">{renderDashboardDocumentTypeIcon(continueDocument.type)}</span>
                 <span className="workspace-continue-copy">
                   {continuePathParts.length > 1 && <small>{continuePathParts.slice(0, -1).join(" / ")}</small>}
                   <strong>{continueDocument.title}</strong>
@@ -2324,22 +2332,22 @@ export function WorkspaceShell({ standaloneMessenger = false }: { standaloneMess
                 <button className="primary" onClick={() => selectDocument(continueDocument.id)} type="button">Open</button>
                 {continueDocument.type === "code" && (
                   <button disabled={!canViewLogs || !canEdit || jobRuns.some((run) => run.documentId === continueDocument.id && (run.status === "pending" || run.status === "running"))} onClick={() => void runDocument(continueDocument)} type="button">
-                    <PlayIcon />
+                    <DashboardRunIcon />
                     Run
                   </button>
                 )}
                 <button onClick={() => { selectDocument(continueDocument.id); navigateWorkspaceView("ai"); setSidePanelCollapsed(true); }} type="button">
-                  <AiIcon />
+                  <DashboardAiIcon />
                   Ask AI
                 </button>
                 {canInvite && (
                   <button onClick={inviteTeammates} type="button">
-                    <UsersIcon />
+                    <DashboardInviteIcon />
                     Invite
                   </button>
                 )}
                 <button onClick={() => openDocumentHistory(continueDocument.id)} type="button">
-                  <RefreshIcon />
+                  <DashboardHistoryIcon />
                   History
                 </button>
               </div>
@@ -2349,9 +2357,9 @@ export function WorkspaceShell({ standaloneMessenger = false }: { standaloneMess
               <strong>Your workspace is ready for its first document.</strong>
               <p>Start with executable code, a shared note, or a visual canvas.</p>
               <div>
-                <button disabled={!canEdit} onClick={() => beginFileCreation("document", undefined, "new-file.ts")} type="button"><CodeIcon />Create code file</button>
-                <button disabled={!canEdit} onClick={() => beginFileCreation("document", undefined, "new-note.md")} type="button"><NoteIcon />Create note</button>
-                <button disabled={!canEdit} onClick={() => beginFileCreation("document", undefined, "new-canvas.canvas")} type="button"><CanvasIcon />Create canvas</button>
+                <button disabled={!canEdit} onClick={() => beginFileCreation("document", undefined, "new-file.ts")} type="button"><DashboardCodeIcon />Create code file</button>
+                <button disabled={!canEdit} onClick={() => beginFileCreation("document", undefined, "new-note.md")} type="button"><DashboardNoteIcon />Create note</button>
+                <button disabled={!canEdit} onClick={() => beginFileCreation("document", undefined, "new-canvas.canvas")} type="button"><DashboardCanvasIcon />Create canvas</button>
               </div>
             </div>
           )}
@@ -2369,17 +2377,17 @@ export function WorkspaceShell({ standaloneMessenger = false }: { standaloneMess
             </div>
             <div className="workspace-dashboard-doc-types">
               <button onClick={() => beginFileCreation("document", undefined, "new-file.ts")} type="button">
-                <CodeIcon />
+                <DashboardCodeIcon />
                 <strong>{codeDocuments.length}</strong>
                 <span>Code files</span>
               </button>
               <button onClick={() => beginFileCreation("document", undefined, "new-note.md")} type="button">
-                <NoteIcon />
+                <DashboardNoteIcon />
                 <strong>{noteDocuments.length}</strong>
                 <span>Notes</span>
               </button>
               <button onClick={() => beginFileCreation("document", undefined, "new-canvas.canvas")} type="button">
-                <CanvasIcon />
+                <DashboardCanvasIcon />
                 <strong>{canvasDocuments.length}</strong>
                 <span>Canvases</span>
               </button>
@@ -2387,7 +2395,7 @@ export function WorkspaceShell({ standaloneMessenger = false }: { standaloneMess
             <div className="workspace-dashboard-recent-docs">
               {recentDocuments.map((document) => (
                 <button key={document.id} onClick={() => selectDocument(document.id)} type="button">
-                  {document.type === "code" ? <CodeIcon /> : document.type === "note" ? <NoteIcon /> : <CanvasIcon />}
+                  {renderDashboardDocumentTypeIcon(document.type)}
                   <strong>{document.title}</strong>
                   <small>{formatRelativeTime(document.updatedAt)}</small>
                 </button>
@@ -2408,7 +2416,7 @@ export function WorkspaceShell({ standaloneMessenger = false }: { standaloneMess
                 const showActorName = index === 0 || previousActorName !== event.actorName;
                 return (
                   <button key={event.id} onClick={() => eventDocument ? selectDocument(eventDocument.id) : navigateWorkspaceView("activity")} type="button">
-                    <span>{renderActivityEventIcon(event)}</span>
+                    <span>{renderDashboardActivityEventIcon(event)}</span>
                     <div>
                       <strong>{showActorName && <b>{event.actorName ?? "System"} </b>}{activityLabel(event)}</strong>
                       <small>{event.documentTitle ? `${event.documentTitle} · ` : ""}{formatRelativeTime(event.createdAt)}</small>
@@ -2467,6 +2475,8 @@ export function WorkspaceShell({ standaloneMessenger = false }: { standaloneMess
             </div>
           </article>
 
+          <GitSyncCard />
+
           <article className="workspace-dashboard-card workspace-dashboard-members-card dashboard-card-members" ref={membersCardRef}>
             <div className="workspace-dashboard-card-heading">
               <div><span>Members</span><small>{memberCount} people in this workspace</small></div>
@@ -2495,7 +2505,7 @@ export function WorkspaceShell({ standaloneMessenger = false }: { standaloneMess
                         <div className="workspace-dashboard-role-menu" data-open={memberRoleMenuOpenId === member.id ? "true" : "false"}>
                           <button disabled={memberActionPendingId === member.id} onClick={() => setMemberRoleMenuOpenId((current) => current === member.id ? null : member.id)} type="button">
                             <span>{member.role}</span>
-                            <ChevronDownIcon />
+                            <DashboardChevronDownIcon />
                           </button>
                           {memberRoleMenuOpenId === member.id && (
                             <div role="menu">
@@ -2852,6 +2862,14 @@ export function WorkspaceShell({ standaloneMessenger = false }: { standaloneMess
 
   function shortActorName(actorName: string | null) {
     return actorName?.trim().split(/\s+/)[0] || "System";
+  }
+
+  function renderDashboardActivityEventIcon(event: ActivityEvent) {
+    if (event.type.startsWith("ai.")) return <DashboardAiIcon />;
+    if (event.type.startsWith("comment.") || event.type.startsWith("member.") || event.type.startsWith("invite.")) return <DashboardInviteIcon />;
+    if (event.type.startsWith("run.")) return <DashboardRunIcon />;
+    if (event.type.startsWith("workspace.")) return <DashboardWorkspaceIcon />;
+    return <DashboardFileIcon />;
   }
 
   function renderActivityEventIcon(event: ActivityEvent) {

@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -31,7 +32,9 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
         />
       </head>
       <body>
-        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+        <Script id="theme-preference" strategy="beforeInteractive">
+          {themeScript}
+        </Script>
         {children}
       </body>
     </html>

@@ -313,6 +313,114 @@ export function SidebarSupportIcon({ className }: IconProps) {
   );
 }
 
+export function DashboardNewDocumentIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M7 3.8h6.5l3.5 3.5v11c0 1.05-.85 1.9-1.9 1.9H7c-1.05 0-1.9-.85-1.9-1.9V5.7c0-1.05.85-1.9 1.9-1.9zM13.3 3.9v2.5c0 .8.4 1.2 1.2 1.2H17" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M11.1 16.8v-4.4M8.9 14.6h4.4" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+    </StrokeIcon>
+  );
+}
+
+export function DashboardGithubIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M12 3.6a8.4 8.4 0 0 0-2.65 16.37c.42.08.57-.18.57-.4v-1.48c-2.33.5-2.82-1.12-2.82-1.12-.38-.97-.93-1.23-.93-1.23-.76-.52.06-.51.06-.51.84.06 1.28.86 1.28.86.75 1.28 1.96.91 2.44.7.08-.54.29-.91.53-1.12-1.86-.21-3.82-.93-3.82-4.14 0-.92.33-1.68.86-2.27-.09-.21-.37-1.07.08-2.23 0 0 .7-.22 2.3.86a7.96 7.96 0 0 1 4.18 0c1.6-1.08 2.3-.86 2.3-.86.45 1.16.17 2.02.08 2.23.53.59.86 1.35.86 2.27 0 3.22-1.97 3.93-3.84 4.14.3.26.57.76.57 1.53v2.27c0 .22.15.49.58.4A8.4 8.4 0 0 0 12 3.6z" stroke="currentColor" strokeWidth="1.55" strokeLinecap="round" strokeLinejoin="round" />
+    </StrokeIcon>
+  );
+}
+
+export function DashboardCodeIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <rect x="3.8" y="4.2" width="16.4" height="15.6" rx="3.4" stroke="currentColor" strokeWidth="1.9" />
+      <path d="m9.4 10-2.3 2 2.3 2M14.6 10l2.3 2-2.3 2M13 8.7l-2 6.6" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </StrokeIcon>
+  );
+}
+
+export function DashboardNoteIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M7 3.8h7.1l3 3v11.4c0 1.1-.9 2-2 2H7c-1.1 0-2-.9-2-2V5.8c0-1.1.9-2 2-2zM13.9 3.9v2.3c0 .8.4 1.2 1.2 1.2h2" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M8.6 11h6.8M8.6 14.3h6.8M8.6 17.6h3.8" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+    </StrokeIcon>
+  );
+}
+
+export function DashboardCanvasIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <rect x="3.8" y="4.2" width="16.4" height="15.6" rx="3.4" stroke="currentColor" strokeWidth="1.9" />
+      <circle cx="8.4" cy="9.3" r="1.4" stroke="currentColor" strokeWidth="1.9" />
+      <circle cx="15.7" cy="10.4" r="1.4" stroke="currentColor" strokeWidth="1.9" />
+      <circle cx="12" cy="15.2" r="1.4" stroke="currentColor" strokeWidth="1.9" />
+      <path d="m9.6 10 4.8.8M14.7 11.7l-2 2.3M10.9 14.1l-1.6-3.3" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+    </StrokeIcon>
+  );
+}
+
+export function DashboardRunIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <circle cx="12" cy="12" r="8.2" stroke="currentColor" strokeWidth="1.9" />
+      <path d="m10.3 8.9 5.1 3.1-5.1 3.1z" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </StrokeIcon>
+  );
+}
+
+export function DashboardAiIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M11.8 3.7c.58 3.18 2.3 4.9 5.48 5.48-3.18.58-4.9 2.3-5.48 5.48-.58-3.18-2.3-4.9-5.48-5.48 3.18-.58 4.9-2.3 5.48-5.48zM18.2 14.7c.24 1.4 1.03 2.2 2.43 2.43-1.4.24-2.2 1.03-2.43 2.43-.24-1.4-1.03-2.2-2.43-2.43 1.4-.24 2.2-1.03 2.43-2.43zM5 15.3c.18 1.05.78 1.65 1.83 1.83-1.05.18-1.65.78-1.83 1.83-.18-1.05-.78-1.65-1.83-1.83 1.05-.18 1.65-.78 1.83-1.83z" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </StrokeIcon>
+  );
+}
+
+export function DashboardInviteIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <circle cx="10" cy="8.5" r="3.1" stroke="currentColor" strokeWidth="1.9" />
+      <path d="M4.7 19.4c.7-3.05 2.45-4.7 5.3-4.7 1.4 0 2.55.4 3.42 1.2M18.1 8.4v5.2M15.5 11h5.2" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </StrokeIcon>
+  );
+}
+
+export function DashboardHistoryIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M19 9.1A7.6 7.6 0 1 0 19.6 13M19 9.1V5.5M19 9.1h-3.6M12 8v4.3l2.8 1.7" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </StrokeIcon>
+  );
+}
+
+export function DashboardFileIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="M7 3.8h6.5l3.5 3.5v10.9c0 1.1-.9 2-2 2H7c-1.1 0-2-.9-2-2V5.8c0-1.1.9-2 2-2zM13.3 3.9v2.5c0 .8.4 1.2 1.2 1.2H17" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </StrokeIcon>
+  );
+}
+
+export function DashboardWorkspaceIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <rect x="4" y="4" width="6.5" height="6.5" rx="2" stroke="currentColor" strokeWidth="1.9" />
+      <rect x="13.5" y="4" width="6.5" height="6.5" rx="2" stroke="currentColor" strokeWidth="1.9" />
+      <rect x="4" y="13.5" width="6.5" height="6.5" rx="2" stroke="currentColor" strokeWidth="1.9" />
+      <rect x="13.5" y="13.5" width="6.5" height="6.5" rx="2" stroke="currentColor" strokeWidth="1.9" />
+    </StrokeIcon>
+  );
+}
+
+export function DashboardChevronDownIcon({ className }: IconProps) {
+  return (
+    <StrokeIcon className={className}>
+      <path d="m7.2 9.6 4.8 4.8 4.8-4.8" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </StrokeIcon>
+  );
+}
+
 export function SortNameIcon({ className }: IconProps) {
   return (
     <StrokeIcon className={className}>

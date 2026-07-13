@@ -1,0 +1,27 @@
+name: Git Sync Gate
+
+on:
+  push:
+    branches:
+      - "sync/**"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+          node-version: 22.22.0
+      - run: npm ci
+        working-directory: apps/web
+      - run: npx prisma generate
+        working-directory: apps/web
+      - run: npm run typecheck
+        working-directory: apps/web
+      - run: npm test
+        working-directory: apps/web
+      - run: npm --prefix services/git-bridge test

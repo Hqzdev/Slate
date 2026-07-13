@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "node scripts/dev.mjs",
-    "dev:down": "docker compose down"
+    "dev:down": "docker compose down",
+    "git-sync": "npm --prefix services/git-bridge run start"
   }
 }

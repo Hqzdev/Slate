@@ -3495,22 +3495,33 @@ button:disabled {
 
 .git-import-form {
   display: grid;
-  gap: 7px;
-  border-top: 1px solid var(--border);
-  margin-top: 8px;
-  padding: 10px 8px 0;
+  width: min(100%, 620px);
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--workspace-panel);
+  box-shadow: 0 14px 34px rgba(11, 17, 14, 0.08);
+  margin-top: 14px;
+  padding: 12px;
+}
+
+.git-import-controls {
+  display: flex;
+  min-width: 0;
+  gap: 8px;
 }
 
 .git-import-form input {
-  width: 100%;
-  height: 30px;
+  min-width: 0;
+  flex: 1 1 auto;
+  height: 36px;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--panel);
+  border-radius: 8px;
+  background: var(--workspace-context);
   color: var(--text);
   outline: none;
-  padding: 0 9px;
-  font-size: 12px;
+  padding: 0 11px;
+  font-size: 12.5px;
 }
 
 .git-import-form input:focus {
@@ -3519,13 +3530,15 @@ button:disabled {
 }
 
 .git-import-form button {
-  height: 28px;
+  height: 36px;
   border: 1px solid var(--accent-border);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--accent-soft);
   color: var(--accent);
-  font-size: 11.5px;
-  font-weight: 600;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
 }
 
 .git-import-form button:hover:not(:disabled) {
@@ -3533,20 +3546,20 @@ button:disabled {
   color: #fff;
 }
 
-.git-import-form > div {
-  display: flex;
-  gap: 7px;
-}
-
-.git-import-form > div button:last-child {
-  border-color: var(--border);
+.git-import-form .git-import-cancel {
+  justify-self: start;
+  height: auto;
+  border: 0;
   background: transparent;
   color: var(--subtle);
+  padding: 1px 0;
+  font-size: 11.5px;
+  font-weight: 600;
 }
 
-.git-import-form > div button:last-child:hover:not(:disabled) {
-  background: var(--panel-muted);
-  color: var(--text);
+.git-import-form .git-import-cancel:hover:not(:disabled) {
+  background: transparent;
+  color: var(--accent);
 }
 
 .git-import-form strong {
@@ -3559,6 +3572,17 @@ button:disabled {
 .git-import-form small {
   color: var(--subtle);
   font-size: 11px;
+  line-height: 1.4;
+}
+
+@media (max-width: 620px) {
+  .git-import-controls {
+    display: grid;
+  }
+
+  .git-import-controls button {
+    width: 100%;
+  }
 }
 
 .share-import-form {
@@ -14517,8 +14541,8 @@ body:has(> .slate-landing) {
 }
 
 .workspace-dashboard-role-menu > button svg {
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   flex: none;
   transition: transform 160ms ease;
 }
@@ -14915,8 +14939,8 @@ body:has(> .slate-landing) {
 
 .workspace-dashboard-primary-action svg,
 .workspace-dashboard-settings-action svg {
-  width: 16px;
-  height: 16px;
+  width: 17px;
+  height: 17px;
 }
 
 .workspace-dashboard-primary-action:hover:not(:disabled),
@@ -15123,8 +15147,8 @@ body:has(> .slate-landing) {
 
 .workspace-continue-actions svg,
 .workspace-continue-empty svg {
-  width: 14px;
-  height: 14px;
+  width: 15px;
+  height: 15px;
 }
 
 .workspace-continue-invite-link {
@@ -15308,8 +15332,8 @@ body:has(> .slate-landing) {
 }
 
 .workspace-dashboard-doc-types svg {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 
 .workspace-dashboard-doc-types strong {
@@ -15375,8 +15399,8 @@ body:has(> .slate-landing) {
 }
 
 .workspace-dashboard-recent-docs svg {
-  width: 16px;
-  height: 16px;
+  width: 17px;
+  height: 17px;
   color: var(--muted);
 }
 
@@ -15446,8 +15470,8 @@ body:has(> .slate-landing) {
 }
 
 .workspace-dashboard-feed button > span svg {
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
 }
 
 .workspace-dashboard-feed strong,
@@ -17691,8 +17715,8 @@ body:has(> .slate-landing) {
 }
 
 .workspace-continue-icon svg {
-  width: 16px;
-  height: 16px;
+  width: 17px;
+  height: 17px;
 }
 
 .workspace-continue-copy {
@@ -21656,3 +21680,23 @@ body:has(> .monad-auth),
 .workspace-guide-card { background: #f8f7f2; border: 1px solid #cfc8bc; bottom: 30px; box-shadow: 0 20px 60px #0004; display: grid; gap: 10px; max-width: 340px; padding: 22px; position: fixed; right: 30px; }
 .workspace-guide-card > span { color: #68756d; font: 500 10px/1.2 "IBM Plex Mono", monospace; }
 .workspace-guide-card h2, .workspace-guide-card p { margin: 0; }.workspace-guide-card h2 { color: #1f2923; font: 500 25px/1 "Newsreader", serif; }.workspace-guide-card p { color: #62675f; font-size: 13px; line-height: 1.5; }.workspace-guide-card div { display: flex; gap: 8px; justify-content: flex-end; }.workspace-guide-card button { background: transparent; border: 0; color: #536158; cursor: pointer; font: inherit; padding: 8px 10px; }.workspace-guide-card button.primary { background: #1e2923; color: #fff; }
+
+.dashboard-card-git-sync { grid-column: span 9; }
+.dashboard-card-git-sync .workspace-dashboard-card-heading > svg { color: var(--accent); height: 18px; width: 18px; }
+.workspace-git-sync-content { align-content: start; display: grid; gap: 8px; min-height: 0; }
+.workspace-git-sync-content > strong { color: var(--text); font-size: 14px; font-weight: 680; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-git-sync-content > small { color: var(--subtle); font-size: 11px; line-height: 1.45; }
+.workspace-git-sync-content > button { align-self: start; background: var(--workspace-hover); border: 0; border-radius: var(--workspace-control-radius); color: var(--text); cursor: pointer; font: inherit; font-size: 11px; font-weight: 650; height: 30px; padding: 0 10px; }
+.workspace-git-sync-content > button:hover:not(:disabled) { background: var(--workspace-selection-fill); color: var(--accent); }
+.workspace-git-sync-content > button:disabled { cursor: not-allowed; opacity: .5; }
+.workspace-git-sync-content > p { color: #d78b74; font-size: 11px; line-height: 1.4; margin: 0; }
+.workspace-git-sync-state { align-items: center; color: var(--subtle); display: inline-flex; font-size: 11px; font-weight: 620; gap: 6px; }
+.workspace-git-sync-state i { background: #8b8b88; border-radius: 999px; height: 6px; width: 6px; }
+.workspace-git-sync-state.state-synced i { background: #4ac58b; }
+.workspace-git-sync-state.state-changes_detected i { background: #d8a43a; }
+.workspace-git-sync-state.state-needs_attention { color: #d78b74; }
+.workspace-git-sync-state.state-needs_attention i { background: #d78b74; }
+.workspace-git-sync-content.unavailable { align-content: center; min-height: 106px; }
+
+@media (max-width: 1200px) { .dashboard-card-git-sync { grid-column: span 10; } }
+@media (max-width: 960px) { .dashboard-card-git-sync { grid-column: auto; } }
