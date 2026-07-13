@@ -1,6 +1,6 @@
 import { createHash, createSign, randomBytes } from "node:crypto";
 import { Buffer } from "node:buffer";
-import { type DocumentType } from "@prisma/client";
+import { Prisma, type DocumentType } from "@prisma/client";
 import { auditLogService } from "./auditLog";
 import { GitHubAppError, githubDocumentShape, isGitHubCommitSha, normalizeGitHubBranch } from "./githubAppInput";
 import { prisma } from "./prisma";
@@ -11,8 +11,8 @@ const githubApiUrl = "https://api.github.com";
 const githubOauthUrl = "https://github.com/login/oauth/access_token";
 const githubApiVersion = "2022-11-28";
 const attemptLifetimeMs = 10 * 60 * 1000;
-const maxImportedFiles = 25;
 const maxImportedFileBytes = 80 * 1024;
+const githubDocumentReadConcurrency = 8;
 
 type GitHubAppConfiguration = {
   appId: string;
@@ -44,12 +44,6 @@ type GitHubRepositoryStatus = {
   trackedFiles: number;
 };
 
-type GitHubTreeEntry = {
-  path: string;
-  sha: string;
-  type: string;
-};
-
 type ImportedGitHubDocument = {
   content: string;
   contentHash: string;
@@ -57,6 +51,36 @@ type ImportedGitHubDocument = {
   path: string;
   remoteBlobSha: string;
   type: DocumentType;
+};
+
+type GitHubRemoteDocument = {
+  path: string;
+  remoteBlobSha: string;
+};
+
+type GitHubRemoteChange = {
+  kind: "added" | "deleted" | "updated";
+  path: string;
+};
+
+type GitHubRemoteChangePreview = GitHubRemoteChange & {
+  conflict: boolean;
+};
+
+type GitHubRemoteSnapshot = {
+  commitSha: string;
+  documents: Map<string, GitHubRemoteDocument>;
+};
+
+type GitHubRemoteSyncPreview = {
+  changes: GitHubRemoteChangePreview[];
+  conflicts: number;
+  remoteHeadSha: string;
+  summary: {
+    added: number;
+    deleted: number;
+    updated: number;
+  };
 };
 
 export class GitHubAppService {
@@ -221,7 +245,13 @@ export class GitHubAppService {
     const repository = await prisma.gitHubWorkspaceRepository.findUnique({ include: { files: true }, where: { workspaceId } });
     if (!repository) throw new GitHubAppError("Select a GitHub repository before importing", 409);
     if (repository.files.length > 0) throw new GitHubAppError("This GitHub repository has already been imported into the workspace", 409);
-    const imported = await this.withInstallationToken(repository.installationId, repository.githubRepositoryId, (token) => this.readImportableDocuments(token, repository.owner, repository.name, repository.branch));
+    const importResult = await this.withInstallationToken(repository.installationId, repository.githubRepositoryId, async (token) => {
+      const snapshot = await this.readRemoteSnapshot(token, repository.owner, repository.name, repository.branch);
+      const documents = await this.readRemoteDocuments(token, repository.owner, repository.name, [...snapshot.documents.values()]);
+      if (documents.length === 0) throw new GitHubAppError("Repository does not contain supported text files within import limits", 400);
+      return { documents, skippedFiles: snapshot.documents.size - documents.length };
+    });
+    const imported = importResult.documents;
     const documents = await workspaceRepository.importDocuments(userId, workspaceId, imported.map(({ content, language, path, type }) => ({ content, language, title: path, type })));
     await prisma.$transaction(imported.map((file, index) => prisma.gitHubWorkspaceRepositoryFile.create({
       data: {
@@ -235,7 +265,92 @@ export class GitHubAppService {
     const head = await this.withInstallationToken(repository.installationId, repository.githubRepositoryId, (token) => this.readHead(token, repository.owner, repository.name, repository.branch));
     await prisma.gitHubWorkspaceRepository.update({ data: { lastRemoteCommitSha: head.commitSha }, where: { id: repository.id } });
     await auditLogService.record({ actorUserId: userId, metadata: { importedFiles: documents.length }, type: "github.repository.imported", workspaceId });
-    return { importedFiles: documents.length };
+    return { importedFiles: documents.length, skippedFiles: importResult.skippedFiles };
+  }
+
+  async previewRemoteChanges(userId: string, workspaceId: string): Promise<GitHubRemoteSyncPreview> {
+    await workspaceAccessPolicy.requireWorkspaceOwner(userId, workspaceId);
+    const repository = await this.repositoryWithFiles(workspaceId);
+    const snapshot = await this.withInstallationToken(repository.installationId, repository.githubRepositoryId, (token) => this.readRemoteSnapshot(token, repository.owner, repository.name, repository.branch));
+    return this.remoteChangePreview(repository.files, snapshot);
+  }
+
+  async applyRemoteChanges(userId: string, workspaceId: string, input: { expectedHeadSha: string }) {
+    await workspaceAccessPolicy.requireWorkspaceOwner(userId, workspaceId);
+    const expectedHeadSha = this.normalizeSha(input.expectedHeadSha);
+    const repository = await this.repositoryWithFiles(workspaceId);
+    return this.withInstallationToken(repository.installationId, repository.githubRepositoryId, async (token) => {
+      const snapshot = await this.readRemoteSnapshot(token, repository.owner, repository.name, repository.branch);
+      if (snapshot.commitSha !== expectedHeadSha) throw new GitHubAppError("Remote branch changed. Check GitHub changes again.", 409);
+      const preview = this.remoteChangePreview(repository.files, snapshot);
+      if (preview.conflicts > 0) throw new GitHubAppError("Resolve local workspace changes before applying GitHub updates", 409);
+      const changedDocuments = preview.changes.filter((change) => change.kind !== "deleted");
+      const remoteDocuments = await this.readRemoteDocuments(token, repository.owner, repository.name, changedDocuments.map((change) => snapshot.documents.get(change.path)).filter((document): document is GitHubRemoteDocument => Boolean(document)));
+      if (remoteDocuments.length !== changedDocuments.length) throw new GitHubAppError("GitHub changes include files that cannot be imported safely", 409);
+      const importedDocuments = remoteDocuments.filter((document) => !repository.files.some((file) => file.path === document.path));
+      const createdDocuments = importedDocuments.length > 0
+        ? await workspaceRepository.importDocuments(userId, workspaceId, importedDocuments.map(({ content, language, path, type }) => ({ content, language, title: path, type })))
+        : [];
+      const existingFiles = new Map(repository.files.map((file) => [file.path, file]));
+      const remoteDocumentsByPath = new Map(remoteDocuments.map((document) => [document.path, document]));
+      const deletedPaths = preview.changes.filter((change) => change.kind === "deleted").map((change) => change.path);
+      const updatedPaths = preview.changes.filter((change) => change.kind === "updated").map((change) => change.path);
+      const archivedAt = new Date();
+      await prisma.$transaction(async (transaction) => {
+        for (const path of updatedPaths) {
+          const file = existingFiles.get(path);
+          const remoteDocument = remoteDocumentsByPath.get(path);
+          if (!file || !remoteDocument) throw new GitHubAppError("GitHub update could not be applied", 409);
+          await transaction.document.update({
+            data: { content: remoteDocument.content, language: remoteDocument.language, type: remoteDocument.type },
+            where: { id: file.documentId }
+          });
+          await transaction.documentSnapshot.create({
+            data: { canvasState: Prisma.JsonNull, content: remoteDocument.content, documentId: file.documentId }
+          });
+          await transaction.gitHubWorkspaceRepositoryFile.update({
+            data: { contentHash: remoteDocument.contentHash, remoteBlobSha: remoteDocument.remoteBlobSha },
+            where: { id: file.id }
+          });
+        }
+        for (const path of deletedPaths) {
+          const file = existingFiles.get(path);
+          if (!file) throw new GitHubAppError("GitHub deletion could not be applied", 409);
+          await transaction.document.update({ data: { archivedAt }, where: { id: file.documentId } });
+          await transaction.workspaceFileNode.updateMany({ data: { archivedAt }, where: { documentId: file.documentId } });
+          await transaction.gitHubWorkspaceRepositoryFile.delete({ where: { id: file.id } });
+        }
+        for (let index = 0; index < createdDocuments.length; index += 1) {
+          const document = createdDocuments[index];
+          const remoteDocument = importedDocuments[index];
+          await transaction.gitHubWorkspaceRepositoryFile.create({
+            data: {
+              contentHash: remoteDocument.contentHash,
+              documentId: document.id,
+              path: remoteDocument.path,
+              remoteBlobSha: remoteDocument.remoteBlobSha,
+              repositoryId: repository.id
+            }
+          });
+        }
+        await transaction.gitHubWorkspaceRepository.update({ data: { lastRemoteCommitSha: snapshot.commitSha }, where: { id: repository.id } });
+        await transaction.activityEvent.create({
+          data: {
+            actorUserId: userId,
+            metadata: { added: importedDocuments.length, deleted: deletedPaths.length, updated: updatedPaths.length },
+            type: "github.sync.applied",
+            workspaceId
+          }
+        });
+      });
+      await auditLogService.record({
+        actorUserId: userId,
+        metadata: { added: importedDocuments.length, deleted: deletedPaths.length, updated: updatedPaths.length },
+        type: "github.repository.refreshed",
+        workspaceId
+      });
+      return { added: importedDocuments.length, deleted: deletedPaths.length, updated: updatedPaths.length };
+    });
   }
 
   async commit(userId: string, workspaceId: string, input: { expectedHeadSha: string; message: string }) {
@@ -300,7 +415,7 @@ export class GitHubAppService {
       });
       await auditLogService.record({ actorUserId: userId, metadata: { changedFiles: changes.length, commitSha }, type: "github.repository.committed", workspaceId });
       return { changedFiles: changes.length, commitSha };
-    });
+    }, "write");
   }
 
   private configuration(): GitHubAppConfiguration {
@@ -381,12 +496,12 @@ export class GitHubAppService {
     return responseBody as T;
   }
 
-  private async withInstallationToken<T>(installationId: string, repositoryId: bigint | null, operation: (token: string) => Promise<T>) {
+  private async withInstallationToken<T>(installationId: string, repositoryId: bigint | null, operation: (token: string) => Promise<T>, contentsPermission: "read" | "write" = "read") {
     const installation = await prisma.gitHubWorkspaceInstallation.findUnique({ where: { id: installationId } });
     if (!installation) throw new GitHubAppError("GitHub installation is no longer connected", 409);
     if (repositoryId && repositoryId > BigInt(Number.MAX_SAFE_INTEGER)) throw new GitHubAppError("GitHub repository identifier is invalid", 400);
     const tokenResponse = await this.appRequest<{ token?: unknown }>(`/app/installations/${installation.githubInstallationId.toString()}/access_tokens`, "POST", {
-      permissions: { contents: "write" },
+      permissions: { contents: contentsPermission },
       repository_ids: repositoryId ? [Number(repositoryId)] : undefined
     });
     if (typeof tokenResponse.token !== "string" || !tokenResponse.token) throw new GitHubAppError("GitHub installation token could not be created", 502);
@@ -405,29 +520,79 @@ export class GitHubAppService {
     return { commitSha: reference.object.sha, treeSha: commit.tree.sha };
   }
 
-  private async readImportableDocuments(token: string, owner: string, repository: string, branch: string): Promise<ImportedGitHubDocument[]> {
+  private async readRemoteSnapshot(token: string, owner: string, repository: string, branch: string): Promise<GitHubRemoteSnapshot> {
     const head = await this.readHead(token, owner, repository, branch);
     const tree = await this.installationRequest<{ truncated?: unknown; tree?: unknown }>(token, `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/git/trees/${head.treeSha}?recursive=1`, "GET");
     if (tree.truncated === true || !Array.isArray(tree.tree)) throw new GitHubAppError("Repository tree is too large to import safely", 413);
-    const entries = tree.tree.flatMap((entry): GitHubTreeEntry[] => {
+    const entries = tree.tree.flatMap((entry): GitHubRemoteDocument[] => {
       if (!entry || typeof entry !== "object") return [];
       const record = entry as Record<string, unknown>;
       if (typeof record.path !== "string" || typeof record.sha !== "string" || typeof record.type !== "string") return [];
-      return [{ path: record.path, sha: record.sha, type: record.type }];
-    }).filter((entry) => entry.type === "blob" && githubDocumentShape(entry.path));
-    const selected = entries.sort((left, right) => left.path.localeCompare(right.path)).slice(0, maxImportedFiles);
+      if (record.type !== "blob" || !githubDocumentShape(record.path)) return [];
+      return [{ path: record.path, remoteBlobSha: record.sha }];
+    }).sort((left, right) => left.path.localeCompare(right.path));
+    const documents = new Map<string, GitHubRemoteDocument>(entries.map((document) => [document.path, document]));
+    if (documents.size === 0) throw new GitHubAppError("Repository does not contain supported files", 400);
+    return { commitSha: head.commitSha, documents };
+  }
+
+  private async readRemoteDocuments(token: string, owner: string, repository: string, entries: GitHubRemoteDocument[]) {
     const documents: ImportedGitHubDocument[] = [];
-    for (const entry of selected) {
-      const blob = await this.installationRequest<{ content?: unknown; encoding?: unknown; size?: unknown }>(token, `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/git/blobs/${entry.sha}`, "GET");
-      if (blob.encoding !== "base64" || typeof blob.content !== "string" || typeof blob.size !== "number" || blob.size <= 0 || blob.size > maxImportedFileBytes) continue;
-      const content = Buffer.from(blob.content.replace(/\n/g, ""), "base64").toString("utf8");
-      if (content.includes("\u0000") || content.includes("\uFFFD")) continue;
-      const shape = githubDocumentShape(entry.path);
-      if (!shape) continue;
-      documents.push({ content, contentHash: this.hash(content), language: shape.language, path: entry.path, remoteBlobSha: entry.sha, type: shape.type });
+    for (let index = 0; index < entries.length; index += githubDocumentReadConcurrency) {
+      const batch = await Promise.all(entries.slice(index, index + githubDocumentReadConcurrency).map((entry) => this.readRemoteDocument(token, owner, repository, entry)));
+      documents.push(...batch.filter((document): document is ImportedGitHubDocument => Boolean(document)));
     }
-    if (documents.length === 0) throw new GitHubAppError("Repository does not contain supported text files within import limits", 400);
     return documents;
+  }
+
+  private async readRemoteDocument(token: string, owner: string, repository: string, entry: GitHubRemoteDocument): Promise<ImportedGitHubDocument | null> {
+    const blob = await this.installationRequest<{ content?: unknown; encoding?: unknown; size?: unknown }>(token, `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/git/blobs/${entry.remoteBlobSha}`, "GET");
+    if (blob.encoding !== "base64" || typeof blob.content !== "string" || typeof blob.size !== "number" || blob.size <= 0 || blob.size > maxImportedFileBytes) return null;
+    const content = Buffer.from(blob.content.replace(/\n/g, ""), "base64").toString("utf8");
+    if (content.includes("\u0000") || content.includes("\uFFFD")) return null;
+    const shape = githubDocumentShape(entry.path);
+    if (!shape) return null;
+    return { content, contentHash: this.hash(content), language: shape.language, path: entry.path, remoteBlobSha: entry.remoteBlobSha, type: shape.type };
+  }
+
+  private async repositoryWithFiles(workspaceId: string) {
+    const repository = await prisma.gitHubWorkspaceRepository.findUnique({
+      include: { files: { include: { document: true } } },
+      where: { workspaceId }
+    });
+    if (!repository) throw new GitHubAppError("Select and import a GitHub repository before refreshing", 409);
+    return repository;
+  }
+
+  private remoteChangePreview(files: Array<{ contentHash: string; document: { archivedAt: Date | null; content: string }; path: string; remoteBlobSha: string | null }>, snapshot: GitHubRemoteSnapshot): GitHubRemoteSyncPreview {
+    const tracked = new Map(files.map((file) => [file.path, file]));
+    const changes: GitHubRemoteChangePreview[] = [];
+    for (const [path, document] of snapshot.documents) {
+      const trackedFile = tracked.get(path);
+      if (!trackedFile) {
+        changes.push({ conflict: false, kind: "added", path });
+        continue;
+      }
+      if (trackedFile.remoteBlobSha !== document.remoteBlobSha) {
+        changes.push({ conflict: trackedFile.document.archivedAt !== null || this.hash(trackedFile.document.content) !== trackedFile.contentHash, kind: "updated", path });
+      }
+    }
+    for (const file of files) {
+      if (!snapshot.documents.has(file.path)) {
+        changes.push({ conflict: file.document.archivedAt !== null || this.hash(file.document.content) !== file.contentHash, kind: "deleted", path: file.path });
+      }
+    }
+    changes.sort((left, right) => left.path.localeCompare(right.path));
+    return {
+      changes,
+      conflicts: changes.filter((change) => change.conflict).length,
+      remoteHeadSha: snapshot.commitSha,
+      summary: {
+        added: changes.filter((change) => change.kind === "added").length,
+        deleted: changes.filter((change) => change.kind === "deleted").length,
+        updated: changes.filter((change) => change.kind === "updated").length
+      }
+    };
   }
 
   private appJwt() {
