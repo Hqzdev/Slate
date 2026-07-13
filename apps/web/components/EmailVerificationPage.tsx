@@ -96,7 +96,7 @@ export function EmailVerificationPage() {
         <button className="onboarding-submit" disabled={pending || code.length !== codeLength} onClick={() => void verify()} type="button">{pending ? "Checking…" : "Verify email"}</button>
         <button className="onboarding-secondary" disabled={pending || !email || remainingResends === 0} onClick={() => void resend()} type="button">{sent ? "Code sent" : "Send a new code"}</button>
         {remainingResends !== null && <small className="resend-limit-status">{remainingResends} of 3 resend attempts remaining in 12 hours.</small>}
-        {developmentCode && <div className="development-code"><span>Local development code</span><strong>{developmentCode}</strong></div>}
+        {developmentCode && <div className="development-code"><span>Verification code</span><strong>{developmentCode}</strong></div>}
         {resendError && <strong className="auth-error">{resendError}</strong>}
       </section>
     </main>

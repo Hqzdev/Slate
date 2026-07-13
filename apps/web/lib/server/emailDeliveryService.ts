@@ -1,6 +1,10 @@
 export class EmailDeliveryService {
   async sendVerificationEmail(email: string, token: string) {
-    if (process.env.NODE_ENV !== "production" && process.env.EMAIL_DELIVERY_MODE !== "resend") {
+    const deliveryMode = process.env.EMAIL_DELIVERY_MODE?.trim();
+    if (deliveryMode === "preview") {
+      return { developmentCode: token };
+    }
+    if (process.env.NODE_ENV !== "production" && deliveryMode !== "resend") {
       console.info(`Slate verification code for ${email}: ${token}`);
       return { developmentCode: token };
     }
