@@ -1,6 +1,8 @@
 # Git Sync
 
-Slate Git Sync has two separate parts. The local Git Bridge watches a configured repository, creates commits only on its configured sync branch, and pushes through the machine's existing Git credential. GitHub Actions validates every pushed `sync/**` branch.
+Slate has two separate Git integrations. The local Git Bridge watches a configured repository, creates commits only on its configured sync branch, and pushes through the machine's existing Git credential. The workspace GitHub App connects one selected GitHub repository, including private repositories, without exposing credentials to the browser. GitHub Actions validates every pushed `sync/**` branch.
+
+Configure the GitHub App integration through [docs/github-app.md](github-app.md). It has its own owner-only import and commit boundary; it does not use the local bridge.
 
 The bridge never checks out branches, force-pushes, stages an already staged index, or syncs `main`, `master`, or `production`. It refuses common secret-bearing paths before staging.
 

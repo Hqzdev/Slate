@@ -9,6 +9,7 @@ import { SettingsModal } from "@/components/SettingsModal";
 import { WorkspaceLoadingShell } from "@/components/WorkspaceLoadingShell";
 import { WorkspaceGuide } from "@/components/WorkspaceGuide";
 import { GitSyncCard } from "@/components/GitSyncCard";
+import { GitHubRepositoryCard } from "@/components/GitHubRepositoryCard";
 import { WorkspaceAiPanel, type WorkspaceAiApplyResult } from "@/components/WorkspaceAiPanel";
 import { WorkspaceMessengerPage } from "@/components/messenger/WorkspaceMessengerPage";
 import { useMessengerUnread } from "@/components/messenger/useMessengerUnread";
@@ -2476,6 +2477,7 @@ export function WorkspaceShell({ standaloneMessenger = false }: { standaloneMess
           </article>
 
           <GitSyncCard />
+          {activeWorkspace && <GitHubRepositoryCard workspaceId={activeWorkspace.id} />}
 
           <article className="workspace-dashboard-card workspace-dashboard-members-card dashboard-card-members" ref={membersCardRef}>
             <div className="workspace-dashboard-card-heading">

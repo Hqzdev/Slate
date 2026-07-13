@@ -65,7 +65,9 @@ Realtime sync and sandbox execution have different operational risks. Sync holds
 
 ## Current Status
 
-The web app exists in [apps/web](/Users/yaroslavfairfieldd/Documents/Github/Slate/apps/web). It includes the landing page, login, registration, workspace management, Monaco, native canvas, comments, invites, activity, realtime grants, and run creation.
+The web app exists in [apps/web](/Users/yaroslavfairfieldd/Documents/Github/Slate/apps/web). It includes the landing page, login, registration, workspace management, Monaco, native canvas, comments, invites, activity, realtime grants, run creation, local Git Bridge sync, and an owner-controlled GitHub App connection for private repository import and tracked-file commits.
+
+Set up the GitHub App before using private repository sync: [docs/github-app.md](docs/github-app.md).
 
 The local server stack is:
 

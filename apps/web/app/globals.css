@@ -21698,5 +21698,20 @@ body:has(> .monad-auth),
 .workspace-git-sync-state.state-needs_attention i { background: #d78b74; }
 .workspace-git-sync-content.unavailable { align-content: center; min-height: 106px; }
 
+.workspace-github-repository-content { align-content: start; display: grid; gap: 8px; min-height: 0; }
+.workspace-github-repository-content > strong { color: var(--text); font-size: 14px; font-weight: 680; overflow-wrap: anywhere; }
+.workspace-github-repository-content > small { color: var(--subtle); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+.workspace-github-repository-content > button,
+.workspace-github-commit-controls > button { align-self: start; background: var(--workspace-hover); border: 0; border-radius: var(--workspace-control-radius); color: var(--text); cursor: pointer; font: inherit; font-size: 11px; font-weight: 650; height: 30px; padding: 0 10px; }
+.workspace-github-repository-content > button:hover:not(:disabled),
+.workspace-github-commit-controls > button:hover:not(:disabled) { background: var(--workspace-selection-fill); color: var(--accent); }
+.workspace-github-repository-content button:disabled { cursor: not-allowed; opacity: .5; }
+.workspace-github-repository-content select,
+.workspace-github-repository-content input { background: var(--workspace-hover); border: 0; border-radius: var(--workspace-control-radius); color: var(--text); font: inherit; font-size: 11px; height: 32px; min-width: 0; padding: 0 10px; }
+.workspace-github-commit-controls { display: grid; gap: 7px; }
+.workspace-github-disconnect { color: #d78b74 !important; }
+.workspace-github-repository-error { color: #d78b74; font-size: 11px; line-height: 1.4; margin: 10px 0 0; }
+.workspace-github-repository-content.unavailable { align-content: center; min-height: 106px; }
+
 @media (max-width: 1200px) { .dashboard-card-git-sync { grid-column: span 10; } }
 @media (max-width: 960px) { .dashboard-card-git-sync { grid-column: auto; } }
