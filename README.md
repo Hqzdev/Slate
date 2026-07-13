@@ -83,13 +83,19 @@ The local server stack is:
 
 ## Local Server Stack
 
-From the repository root, start the complete local stack:
+From the repository root, start the default local stack:
 
 ```bash
 npm run dev
 ```
 
-On macOS, this opens Docker Desktop when needed. It then starts Postgres, Redis, MinIO, and ClamAV, creates the private Messenger bucket, generates the Prisma clients, applies database migrations, builds and starts the isolated Messenger media worker, and runs the web app, sync service, Messenger realtime gateway, and execution worker. Press `Ctrl+C` to stop the application services. Container infrastructure remains available for the next start.
+On macOS, this opens Docker Desktop when needed. It then starts Postgres and Redis, generates the Prisma clients, applies database migrations, and runs the web app, sync service, and execution worker. Press `Ctrl+C` to stop the application services. Container infrastructure remains available for the next start.
+
+Start the Messenger infrastructure and workers only when Messenger work is explicitly required:
+
+```bash
+npm run dev:messenger
+```
 
 Stop the local container infrastructure when it is no longer needed:
 

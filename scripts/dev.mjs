@@ -5,22 +5,23 @@ class DevelopmentStack {
   constructor() {
     this.children = new Set();
     this.isStopping = false;
+    this.messengerEnabled = process.argv.includes("--messenger");
   }
 
   start() {
     this.installSignalHandlers();
     this.ensureDockerIsRunning();
-    this.runSetup("Docker services", "docker", [
+    const dockerServices = [
       "compose",
       "up",
       "-d",
       "--wait",
       "postgres",
-      "redis",
-      "minio",
-      "clamav",
-    ]);
-    this.runSetup("MinIO bucket", "docker", ["compose", "run", "--rm", "minio-init"]);
+      "redis"
+    ];
+    if (this.messengerEnabled) dockerServices.push("minio", "clamav");
+    this.runSetup("Docker services", "docker", dockerServices);
+    if (this.messengerEnabled) this.runSetup("MinIO bucket", "docker", ["compose", "run", "--rm", "minio-init"]);
     this.runSetup("Prisma clients", "npm", [
       "--prefix",
       "apps/web",
@@ -33,11 +34,11 @@ class DevelopmentStack {
       "run",
       "db:deploy",
     ]);
-    this.runSetup("Messenger media worker", "docker", ["compose", "up", "-d", "--build", "--wait", "messenger-media"]);
+    if (this.messengerEnabled) this.runSetup("Messenger media worker", "docker", ["compose", "up", "-d", "--build", "--wait", "messenger-media"]);
     this.startService("web", "node", ["scripts/run-next.mjs", "dev"], "apps/web");
     this.startService("sync", "node", ["src/server.js"], "services/sync");
-    this.startService("messenger-realtime", "node", ["src/server.js"], "services/messenger-realtime");
-    this.startService("messenger-ai", "npm", ["run", "messenger:ai:worker"], "apps/web");
+    if (this.messengerEnabled) this.startService("messenger-realtime", "node", ["src/server.js"], "services/messenger-realtime");
+    if (this.messengerEnabled) this.startService("messenger-ai", "npm", ["run", "messenger:ai:worker"], "apps/web");
     this.startService("execution", "node", ["src/worker.js"], "services/execution");
   }
 
