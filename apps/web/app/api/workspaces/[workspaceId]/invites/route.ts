@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { type WorkspaceRole } from "@prisma/client";
 import { guardMutationRequest } from "@/lib/server/apiSecurity";
 import { authService } from "@/lib/server/auth";
+import { emailVerificationPolicy } from "@/lib/server/emailVerificationPolicy";
 import { inviteRepository } from "@/lib/server/inviteRepository";
 
 export const runtime = "nodejs";
@@ -31,7 +32,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ wo
   if (!user) {
     return NextResponse.json({ error: "Authentication required" }, { status: 401 });
   }
-  if (!user.emailVerifiedAt) return NextResponse.json({ error: "Verify your email before inviting people" }, { status: 403 });
+  if (emailVerificationPolicy.isRequired() && !user.emailVerifiedAt) return NextResponse.json({ error: "Verify your email before inviting people" }, { status: 403 });
 
   const body = await request.json();
   const role = body.role;

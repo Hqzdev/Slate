@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { guardMutationRequest } from "@/lib/server/apiSecurity";
 import { authService } from "@/lib/server/auth";
+import { emailVerificationPolicy } from "@/lib/server/emailVerificationPolicy";
 import { WorkspaceAccessDeniedError, WorkspaceNotFoundError, workspaceRepository } from "@/lib/server/workspaceRepository";
 
 export const runtime = "nodejs";
@@ -42,7 +43,7 @@ export async function POST(request: NextRequest) {
     if (!user) {
       return NextResponse.json({ error: "Authentication required" }, { status: 401 });
     }
-    if (!user.emailVerifiedAt || !user.onboardingCompletedAt) return NextResponse.json({ error: "Complete account setup before creating a workspace" }, { status: 403 });
+    if ((emailVerificationPolicy.isRequired() && !user.emailVerifiedAt) || !user.onboardingCompletedAt) return NextResponse.json({ error: "Complete account setup before creating a workspace" }, { status: 403 });
 
     const body = await request.json().catch(() => ({})) as { name?: unknown };
     const workspaceName = typeof body.name === "string" ? body.name.trim() : "";

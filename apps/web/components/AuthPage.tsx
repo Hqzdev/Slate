@@ -73,8 +73,12 @@ export function AuthPage(props: AuthPageProps) {
     });
 
     if (response.ok) {
-      const body = await response.json() as { developmentCode?: string | null };
+      const body = await response.json() as { developmentCode?: string | null; emailVerificationRequired?: boolean };
       if (isRegister) {
+        if (body.emailVerificationRequired === false) {
+          window.location.href = "/onboarding";
+          return;
+        }
         if (body.developmentCode) window.sessionStorage.setItem("slate-development-verification-code", body.developmentCode);
         window.location.href = `/verify-email?email=${encodeURIComponent(String(formData.get("email") ?? ""))}`;
         return;

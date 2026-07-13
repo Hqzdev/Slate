@@ -4,6 +4,7 @@ import { authService } from "@/lib/server/auth";
 import { auditLogService } from "@/lib/server/auditLog";
 import { passwordService } from "@/lib/server/password";
 import { prisma } from "@/lib/server/prisma";
+import { emailVerificationPolicy } from "@/lib/server/emailVerificationPolicy";
 import { normalizeEmail, normalizeUsername } from "@/lib/server/identityPolicy";
 
 export const runtime = "nodejs";
@@ -29,7 +30,7 @@ export async function POST(request: NextRequest) {
       }).catch((auditError) => console.error(auditError));
       return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
     }
-    if (!user.emailVerifiedAt) return NextResponse.json({ code: "email_verification_required", error: "Verify your email before signing in" }, { status: 403 });
+    if (emailVerificationPolicy.isRequired() && !user.emailVerifiedAt) return NextResponse.json({ code: "email_verification_required", error: "Verify your email before signing in" }, { status: 403 });
 
     const session = await authService.createSession(user.id, request);
     await auditLogService.record({

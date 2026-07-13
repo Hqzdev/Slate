@@ -7,6 +7,7 @@ import { getPasswordValidationError, isValidEmail, isValidUsername, normalizeEma
 import { passwordService } from "@/lib/server/password";
 import { prisma } from "@/lib/server/prisma";
 import { workspaceRepository } from "@/lib/server/workspaceRepository";
+import { emailVerificationPolicy } from "@/lib/server/emailVerificationPolicy";
 
 export const runtime = "nodejs";
 
@@ -35,11 +36,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Username is already taken" }, { status: 409 });
   }
 
+  const emailVerificationRequired = emailVerificationPolicy.isRequired();
   const userCount = await prisma.user.count();
   const user = await prisma.user.create({
     data: {
       color: colors[userCount % colors.length],
       email,
+      emailVerifiedAt: emailVerificationRequired ? null : new Date(),
       initials: initialsFromName(name),
       name,
       passwordHash: await passwordService.hash(password),
@@ -58,9 +61,10 @@ export async function POST(request: NextRequest) {
     metadata: { email: user.email },
     type: "auth.registered"
   });
+  if (!emailVerificationRequired) return NextResponse.json({ emailVerificationRequired, user: publicUser(user), verificationEmailSent: false }, { status: 201 });
   const verificationToken = await emailVerificationService.createToken(user.id);
   const delivery = await emailDeliveryService.sendVerificationEmail(user.email, verificationToken).then((result) => ({ developmentCode: result.developmentCode, sent: true })).catch(() => ({ developmentCode: null, sent: false }));
-  return NextResponse.json({ developmentCode: delivery.developmentCode, user: publicUser(user), verificationEmailSent: delivery.sent }, { status: 201 });
+  return NextResponse.json({ developmentCode: delivery.developmentCode, emailVerificationRequired, user: publicUser(user), verificationEmailSent: delivery.sent }, { status: 201 });
 }
 
 function initialsFromName(name: string) {
