@@ -1,211 +1,303 @@
 # Slate
 
-Slate is a realtime collaborative coding workspace. The long-term product direction is a multiplayer code editor with an infinite canvas, sandboxed code execution, persistence, source-control integrations, and AI collaborators.
+> A realtime workspace for software teams that keeps code, architecture, execution evidence, source control, and AI-assisted drafts in one shared room.
 
-The project is intentionally built MVP-first. The first milestone is not a complete microservice platform. It is a working vertical demo: two browser tabs in one room editing code and canvas state together, with visible presence and a safe Run button.
+Slate is a full-stack collaborative developer workspace. It replaces the fragmented loop of editor, whiteboard, terminal output, repository browser, and chat context with a single persistent workspace where a team can reason about a change, implement it together, run it safely, and preserve the result.
 
-## MVP
+## Why Slate
 
-Tier A proves the product:
+Software work loses context as it moves between tools. A diagram is separated from the files it describes, terminal output disappears after a run, and the decision behind a change is difficult to reconstruct later.
 
-- Shared rooms by URL.
-- Monaco editor synchronized with Yjs.
-- Native canvas state synchronized with Yjs.
-- Awareness and presence for online users.
-- Persistent room snapshots.
-- Sandboxed execution for a small set of languages.
-- Local development through one documented command once the stack exists.
+Slate makes the workspace itself the source of truth:
 
-## Later Scope
+- Code, notes, and native diagrams live in the same document model.
+- Multiple people edit and see presence in realtime.
+- Runs are queued, isolated, and attached to shared activity.
+- AI proposes reviewable drafts instead of silently changing a workspace.
+- GitHub repositories can be imported, inspected, edited, committed, and pushed through an owner-controlled GitHub App connection.
 
-Tier B adds the work that is valuable only after the demo is real:
+## Product tour
 
-- Custom sync service.
-- Git repository import, edit, commit, and push.
-- AI participant in the room.
-- Stronger sandbox isolation.
-- Export workers.
-- Observability and load testing.
+Every portfolio image below is captured from the running Slate application. The gallery intentionally shows distinct product surfaces rather than mocked concept screens.
 
-Tier C is deferred:
+### Landing page
 
-- Organizations.
-- Billing.
-- Multi-region deployment.
-- Advanced permission models.
+![Slate landing page](docs/screenshots/01-landing.png)
 
-## Repository Layout
+The public product page explains Slate's single-room workflow and leads directly into the realtime workspace experience.
+
+### Workspace dashboard
+
+![Slate workspace dashboard](docs/screenshots/02-dashboard.jpg)
+
+The dashboard keeps the active document, workspace activity, execution status, project structure, GitHub connection state, and collaboration entry points in one place.
+
+### Collaborative code editor
+
+![Slate collaborative code editor](docs/screenshots/03-files-code.jpg)
+
+The editor combines a Monaco code surface with document tabs, persisted realtime state, a selected execution sandbox, and a direct Run action.
+
+### Native architecture canvas
+
+![Slate native architecture canvas](docs/screenshots/04-canvas-overview.jpg)
+
+The canvas is a first-class realtime document with shapes, connectors, layers, selection tools, inspector controls, zoom, grid, and export actions.
+
+### AI Draft workflow
+
+![Slate AI assistant workflow](docs/screenshots/06-ai-draft.jpg)
+
+AI can inspect authorized workspace context, explain a plan, create a draft, and hand the result back through an explicit review and Apply boundary.
+
+The expanded capture roadmap, including responsive, GitHub, execution, and additional collaboration views, is in [docs/portfolio-screenshots.md](docs/portfolio-screenshots.md).
+
+| Surface | What it demonstrates |
+| --- | --- |
+| Landing page | Product positioning, realtime workflow, native canvas, shared runs, and security posture. |
+| Workspace dashboard | Workspace health, document inventory, member access, activity, and GitHub connection state. |
+| Code editor | Monaco editing, collaborative presence, Yjs-backed state, document navigation, and execution entry point. |
+| Native canvas | Shapes, connectors, selection, group movement and resize, alignment, export, and realtime canvas state. |
+| AI panel | Workspace-aware answers, structured drafts, Mermaid and canvas diagrams, diff review, and explicit Apply. |
+| GitHub Sync | Owner-controlled GitHub App connection, repository import, tracked files, review, commit, and push. |
+| Collaboration controls | In-app invitations, workspace roles, member management, blocking, ownership protection, and activity history. |
+
+## What is implemented
+
+### Workspace and collaboration
+
+- Registration, login, sessions, onboarding, and email-verification policy controls.
+- Workspace creation, switching, and settings.
+- In-app invitations for existing accounts.
+- Owner, editor, and viewer roles with workspace-scoped permissions.
+- Member removal, workspace-local blocking, and guarded ownership transfer.
+- Workspace activity records and audit events.
+- Command palette, document navigation, responsive workspace shell, light and dark themes.
+
+### Realtime code and documents
+
+- Monaco code editor with language-aware editing.
+- Yjs documents synchronized through a dedicated WebSocket sync service.
+- Awareness and collaborator presence.
+- Persistent document snapshots stored in Postgres.
+- Code files, notes, folders, and canvas documents in one workspace tree.
+- Markdown rendering with GFM support and sanitization.
+- Concurrent-edit protection for AI-proposed document updates.
+
+### Native architecture canvas
+
+- Native SVG canvas rather than an embedded third-party whiteboard.
+- Shapes, text, connectors, colors, labels, and inspector controls.
+- Marquee selection, additive selection, multi-shape movement, and group resize.
+- Locked-shape handling, duplicate, delete, align, bring-to-front, and send-to-back actions.
+- Pan, zoom, minimap, selection bounds, and contextual toolbar controls.
+- SVG and PNG export in the browser.
+- Persistent and realtime-synchronized canvas documents.
+
+### AI-assisted work
+
+- Server-side GigaChat integration with credentials scoped to the web runtime.
+- Workspace-aware answers that can read permitted workspace documents.
+- Reviewable drafts for code, notes, GFM tables, and native canvas diagrams.
+- Mermaid-to-canvas preview and diagram generation.
+- Bounded diff preview before document changes.
+- Live Yjs content-hash check before Apply, so concurrent changes are never overwritten silently.
+- Explicit Draft + Apply boundary: AI does not mutate a workspace without a human decision.
+
+### GitHub workflow
+
+- Owner-controlled GitHub App connection for private repositories.
+- Repository selection and import into a Slate workspace.
+- Tracked-file status and explicit manual sync.
+- Reviewable commit boundary before pushing changes.
+- GitHub App installation scope prevents ordinary members from connecting repositories for the workspace.
+- Local Git Bridge remains available for local development workflows.
+
+### Execution
+
+- Queued execution jobs backed by Redis and BullMQ.
+- Dedicated execution worker separated from the web process.
+- Node execution inside a per-run Docker container.
+- Run state, output, exit status, and activity association.
+- Health endpoints for the web application, sync service, and execution worker.
+
+### Messenger module
+
+Messenger is implemented as a separately gated module and is intentionally disabled in the default product path. It is not presented as a live portfolio workflow.
+
+- Workspace conversations, direct messages, reactions, receipts, unread state, and access checks.
+- WebSocket notification gateway with an outbox model and short-lived grants.
+- Encrypted-at-rest message content and key rotation support.
+- Attachment storage, validation, malware scanning, preview generation, and cleanup lifecycle.
+- Opt-in AI extraction pipeline and workspace draft handoff.
+- Feature flags, health endpoints, smoke tests, load checks, and production runbook.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  Browser["Next.js + React workspace"]
+  Web["Next.js API and auth"]
+  Sync["Yjs WebSocket sync service"]
+  Execution["Execution worker"]
+  GitHub["GitHub App"]
+  AI["GigaChat"]
+  Postgres[(Postgres)]
+  Redis[(Redis)]
+  Docker["Per-run Docker container"]
+
+  Browser <--> Web
+  Browser <--> Sync
+  Web <--> Postgres
+  Sync <--> Postgres
+  Web <--> Redis
+  Execution <--> Redis
+  Execution --> Docker
+  Web <--> GitHub
+  Web <--> AI
+```
+
+The architecture deliberately separates the services with distinct risk profiles:
+
+- The web application owns authentication, workspace access, API routes, persistence orchestration, and product UI.
+- The sync service maintains long-lived realtime connections and persists collaborative Yjs state.
+- The execution worker consumes queued jobs and isolates user code from the product shell.
+- Messenger realtime and media processing are separate opt-in services because notification delivery and file inspection have different operational constraints.
+
+For the detailed model, see [architecture](docs/architecture.md), [realtime model](docs/realtime-model.md), [execution model](docs/execution-model.md), and [security model](docs/security-model.md).
+
+## Technology
+
+| Area | Stack |
+| --- | --- |
+| Web application | Next.js 16, React 19, TypeScript |
+| UI | Custom Slate design system, SVG UI primitives, Hugeicons |
+| Code editing | Monaco Editor, `y-monaco` |
+| Realtime collaboration | Yjs, `y-protocols`, WebSocket, dedicated Node sync service |
+| Data | PostgreSQL, Prisma |
+| Queues and fanout | Redis, BullMQ, ioredis |
+| Execution | Node worker, Docker per run |
+| AI | GigaChat, server-only credentials, Mermaid |
+| Repository integration | GitHub App, GitHub API, local Git Bridge |
+| Storage and media | S3-compatible storage, MinIO locally, Sharp, ClamAV |
+| Validation | TypeScript, Node test runner, ESLint, production builds |
+| Local infrastructure | Docker Compose |
+
+## Repository map
 
 ```text
 apps/
-  web/                 Browser workspace
+  web/                       Next.js product application
 services/
-  sync/                Realtime synchronization service
-  messenger-realtime/  Messenger notification gateway and outbox publisher
-  messenger-media/     Isolated attachment validation and preview worker
-  execution/           Sandboxed code execution service
-packages/
-  shared/              Shared domain types
-  protocol/            Service contracts and wire formats
-infra/
-  docker/              Local infrastructure definitions
+  sync/                      Realtime Yjs WebSocket service
+  execution/                 Redis-backed Docker execution worker
+  messenger-realtime/        Opt-in Messenger notification gateway
+  messenger-media/           Opt-in attachment validation and preview worker
 docs/
-  decisions/           Architecture decision records
+  architecture.md            System boundaries and product loop
+  realtime-model.md          Yjs synchronization and persistence model
+  execution-model.md         Queue and isolation model
+  security-model.md          Security boundaries and operations
+  github-app.md              GitHub App setup and repository access model
+  messenger/                 Gated Messenger implementation and runbook
+scripts/
+  dev.mjs                    Local stack launcher
 ```
 
-## Product Style
+## Security and product boundaries
 
-Slate should feel like a precise premium developer tool: restrained, fast, monochrome-first, and workspace-led. The design direction is documented in [docs/design-system.md](/Users/yaroslavfairfieldd/Documents/Github/Slate/docs/design-system.md).
+- Workspace access is role-based and enforced server-side.
+- Tokens, GitHub credentials, and AI credentials remain server-side.
+- The GitHub connection is owner-controlled and installation-scoped.
+- Execution is separated from the web process and runs in a Docker container.
+- AI output is a draft until a user explicitly applies it.
+- Realtime document state is scoped to authorized workspace members.
+- Messenger remains disabled until its independent production gates are satisfied.
 
-## Architecture Principle
+Slate does not claim to be a completed enterprise platform. Advanced organizations, billing, multi-region operation, fully hardened public execution, and Messenger production rollout remain intentionally separate workstreams. The current delivery priority is a strong collaborative workspace loop with honest operational boundaries.
 
-The project starts as a vertical product slice and grows into services only where the boundary is justified by load profile or security.
+## Run locally
 
-Realtime sync and sandbox execution have different operational risks. Sync holds long-lived connections and must stay low-latency. Execution runs untrusted code and must be isolated. Those are real service boundaries. A premature full platform is not.
+### Prerequisites
 
-## Current Status
+- Node.js 24+
+- Docker Desktop
+- npm
 
-The web app exists in [apps/web](/Users/yaroslavfairfieldd/Documents/Github/Slate/apps/web). It includes the landing page, login, registration, workspace management, Monaco, native canvas, comments, invites, activity, realtime grants, run creation, local Git Bridge sync, and an owner-controlled GitHub App connection for private repository import and tracked-file commits.
+Install each service once:
 
-Set up the GitHub App before using private repository sync: [docs/github-app.md](docs/github-app.md).
+```bash
+npm --prefix apps/web install
+npm --prefix services/sync install
+npm --prefix services/execution install
+npm --prefix services/messenger-realtime install
+npm --prefix services/messenger-media install
+```
 
-The local server stack is:
-
-- Postgres for users, sessions, workspaces, documents, snapshots, jobs, activity, and audit events.
-- Redis for rate limiting, realtime fanout, and the execution queue.
-- MinIO for local private Messenger object storage.
-- ClamAV for Messenger attachment malware scanning.
-- Next API routes in `apps/web`.
-- The sync service in `services/sync`.
-- The execution worker in `services/execution`.
-- The Messenger realtime gateway in `services/messenger-realtime`.
-- The Messenger media worker in `services/messenger-media`.
-
-## Local Server Stack
-
-From the repository root, start the default local stack:
+Start the core stack:
 
 ```bash
 npm run dev
 ```
 
-On macOS, this opens Docker Desktop when needed. It then starts Postgres and Redis, generates the Prisma clients, applies database migrations, and runs the web app, sync service, and execution worker. Press `Ctrl+C` to stop the application services. Container infrastructure remains available for the next start.
+This starts Postgres and Redis, generates Prisma clients, applies local migrations, and starts the web app, sync service, and execution worker. Open [http://localhost:3000](http://localhost:3000).
 
-Start the Messenger infrastructure and workers only when Messenger work is explicitly required:
+Messenger infrastructure is intentionally opt-in:
 
 ```bash
 npm run dev:messenger
 ```
 
-Stop the local container infrastructure when it is no longer needed:
+Stop local infrastructure:
 
 ```bash
 npm run dev:down
 ```
 
-Install each workspace's dependencies before the first start:
+## Verify the project
 
 ```bash
-npm --prefix apps/web install
-npm --prefix services/sync install
-npm --prefix services/messenger-realtime install
-npm --prefix services/messenger-media install
-npm --prefix services/execution install
-```
-
-Open [http://localhost:3000](http://localhost:3000).
-
-Available routes:
-
-- `/` — landing page.
-- `/login` — sign in.
-- `/register` — account creation.
-- `/workspace` — product workspace prototype.
-
-Health checks:
-
-- Web API: [http://127.0.0.1:3000/api/health](http://127.0.0.1:3000/api/health)
-- Sync service: [http://127.0.0.1:1234/health](http://127.0.0.1:1234/health)
-- Execution worker: [http://127.0.0.1:1235/health](http://127.0.0.1:1235/health)
-- Messenger realtime: [http://127.0.0.1:1236/health/live](http://127.0.0.1:1236/health/live)
-- Messenger media: internal container health check on port `1237`.
-- MinIO API: [http://127.0.0.1:9000/minio/health/live](http://127.0.0.1:9000/minio/health/live)
-- MinIO console: [http://127.0.0.1:9001](http://127.0.0.1:9001)
-
-## Messenger Foundation
-
-Messenger phase 1 provides the encrypted server data layer and APIs; the Messenger page itself starts in phase 2. Production must set `MESSENGER_KEY_ID`, `MESSENGER_KEY_ENCRYPTION_KEY`, and `MESSENGER_FINGERPRINT_KEY`. Both key values are independent 32-byte base64 secrets. During wrapping-key rotation, `MESSENGER_KEY_ENCRYPTION_KEYS` holds a JSON object of every retained key ID to base64 key while `MESSENGER_KEY_ID` selects the active writer key. Local development has an explicit non-production fallback.
-
-Messenger retention runs as a separate idempotent cleanup worker: `npm --prefix apps/web run messenger:retention:cleanup`. It creates deletion tombstones before removing object variants and ciphertext. Rotate an approved workspace key with `MESSENGER_ROTATE_WORKSPACE_ID=<workspace-id> npm --prefix apps/web run messenger:key:rotate`. Production must also set `TRUSTED_PROXY_CLIENT_IP_HEADER` to the header supplied only by its trusted edge proxy.
-
-After deploying migration `0015_messenger_foundation`, reconcile existing workspaces before enabling Messenger:
-
-```bash
-npm --prefix apps/web run messenger:backfill
-```
-
-The command is idempotent and reports only aggregate counts and its workspace cursor. A database whose name contains `test` can run the destructive foundation smoke test:
-
-```bash
-npm --prefix apps/web run messenger:smoke
-```
-
-The smoke test verifies encrypted persistence, idempotent send, stable sequence allocation, viewer denial, unread/receipt behavior, and reactions, then removes its own fixture.
-
-Keep `MESSENGER_ENABLED=false` during migration and reconciliation. Set it to `true` only after backfill finishes with zero invariant violations; all Messenger REST routes otherwise fail closed.
-
-Messenger realtime is independently gated by `MESSENGER_REALTIME_ENABLED`. Production must provide `MESSENGER_REALTIME_PUBLIC_URL`, `MESSENGER_REALTIME_GRANT_ACTIVE_KID`, `MESSENGER_REALTIME_GRANT_KEYS`, and `MESSENGER_REALTIME_ALLOWED_ORIGINS`. Grants expire after two minutes, are never persisted by the browser, and websocket events contain only identifiers and recovery cursors. Keep the realtime flag disabled until migration `0016_messenger_realtime_outbox_leases` is deployed and the gateway health check is ready.
-
-Messenger attachment upload is independently gated by `MESSENGER_ATTACHMENTS_ENABLED`. Migration `0017_messenger_attachments_foundation` adds encrypted attachment metadata, durable media jobs, atomic message claims, cleanup state, and the missing realtime dead-letter status. Local development uses the private `slate-messenger` MinIO bucket. Production must provide a private S3-compatible endpoint, bucket, credentials, TLS, server-side encryption, quotas, and lifecycle monitoring before enabling the flag.
-
-Messenger AI is independently default-off through `MESSENGER_AI_ENABLED=false` and can be stopped immediately with `MESSENGER_AI_KILL_SWITCH=true`. Migration `0020_messenger_ai_extraction_leases` adds crash-recoverable leases for consented attachment extraction in the isolated media service. The Messenger AI worker runs separately from the web process. Realtime and media expose `/health/ready` and `/metrics`; staging security and 2x-forecast load gates are available through `npm run messenger:security:staging` and `npm run messenger:load`.
-
-Verify the direct-upload lifecycle against local Postgres and MinIO:
-
-```bash
-npm --prefix apps/web run messenger:storage:smoke
-npm --prefix apps/web run messenger:media:smoke
-npm --prefix apps/web run messenger:attachments:cleanup
-```
-
-The storage smoke reserves an encrypted attachment, performs the signed exact-size POST, rejects an invalid-size upload, confirms storage metadata, creates the durable media job, abandons the object, and removes its fixture. The media smoke verifies clean PNG processing, its generated WebP thumbnail, and a real MinIO Range read, then requires the EICAR test pattern to finish as `malware_detected`; it removes every object and database fixture. The browser UI exposes uploads only when both Messenger rollout flags are enabled.
-
-## AI Assistant
-
-The workspace AI panel uses GigaChat through server-only credentials. The safe MVP can answer questions, read workspace documents, prepare draft code, notes, GFM tables, and native canvas diagrams, and propose full-content updates for completely observed code and note documents. Drafts change the workspace only after Apply. Existing document updates use a bounded diff preview and a live Yjs content-hash check so concurrent edits are never overwritten silently. Canvas updates remain deferred.
-
-Put the GigaChat values from `apps/web/.env.example` in `apps/web/.env.local` so credentials stay scoped to the web runtime. Prefer the ready-to-use Basic credential in `GIGACHAT_AUTHORIZATION_KEY`; separate client ID and secret values are also supported. Keep `GIGACHAT_MAX_CONCURRENCY=1` for the default personal API quota unless the provider raises the limit. Put the same random `SYNC_INTERNAL_API_SECRET` of at least 32 characters in the web and sync environments. The sync service uses a minimal service-local Prisma client and only imports an allowlist of database and realtime settings from the shared `apps/web/.env` file.
-
-The main GigaChat endpoint requires the Russian trusted root certificate. `npm run dev` and `npm start` use the bundled official certificate automatically. Deployments can override it by setting `NODE_EXTRA_CA_CERTS` before Node starts:
-
-```bash
-export NODE_EXTRA_CA_CERTS=/absolute/path/to/russian_trusted_root_ca_pem.crt
-cd apps/web
-npm run dev
-```
-
-Do not disable TLS verification. See the [GigaChat certificate guide](https://developers.sber.ru/docs/ru/gigachat/certificates).
-
-Run the server smoke test after all services are up:
-
-```bash
+npm --prefix apps/web run typecheck
+npm --prefix apps/web test
+npm --prefix apps/web run build
 node scripts/smoke-server.mjs
 ```
 
-The smoke test checks health endpoints, AI storage readiness, registration, workspace creation, document creation, realtime authorization, run creation, and worker completion.
+The server smoke checks health endpoints, registration, workspace creation, document creation, realtime authorization, run creation, and worker completion after the local stack is available.
 
-Workspace status:
+## Important configuration
 
-- Monaco editor is mounted in the code panel.
-- Editor content is backed by Yjs and synced through the local WebSocket sync service.
-- The native SVG canvas is mounted in the canvas panel.
-- Canvas state persists to documents and syncs across tabs through the local WebSocket sync service.
-- The Run button creates queued jobs for the execution worker.
+- GitHub App setup: [docs/github-app.md](docs/github-app.md)
+- GitHub production sync: [docs/GITHUB_SYNC.md](docs/GITHUB_SYNC.md)
+- Database workflow: [docs/database.md](docs/database.md)
+- AI credentials: `apps/web/.env.example`
+- Messenger production operations: [docs/messenger/08-production-runbook.md](docs/messenger/08-production-runbook.md)
 
-## Next Step
+Never commit `.env`, GitHub App private keys, provider credentials, or production storage keys.
 
-Harden the server chain:
+## Current roadmap
 
-1. Add a single local stack command for all services.
-2. Add reconnect and persistence tests around the sync service.
-3. Add run cancellation, streaming status, and stronger execution result metadata.
+The next product milestones are:
+
+1. General CI and release discipline for the full web application.
+2. Public HTTPS deployment and production GitHub App configuration.
+3. Stronger execution isolation, cancellation, streamed output, and resource limits.
+4. GitHub webhook-driven automatic sync.
+5. Persistent canvas group entities and richer workspace organization.
+6. Organizations, billing, advanced permissions, observability, and multi-region operations.
+
+## Documentation
+
+- [Architecture](docs/architecture.md)
+- [Design system](docs/design-system.md)
+- [Realtime model](docs/realtime-model.md)
+- [Execution model](docs/execution-model.md)
+- [Security model](docs/security-model.md)
+- [GitHub App](docs/github-app.md)
+- [Git Sync](docs/git-sync.md)
+- [Messenger overview](docs/messenger/00-overview.md)
+- [Portfolio screenshot brief](docs/portfolio-screenshots.md)
+
+## License
+
+This repository is private and not licensed for redistribution.
